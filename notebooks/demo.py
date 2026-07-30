@@ -9,9 +9,9 @@ def _():
     import marimo as mo
     import numpy as np
     import matplotlib.pyplot as plt
-    from seasons_py import detect_seasonality, scan_periods, fold_series
+    from seasons_py import detect_seasonality, scan_periods, fold_series, extract_seasonality
 
-    return detect_seasonality, fold_series, mo, np, plt, scan_periods
+    return detect_seasonality, extract_seasonality, fold_series, mo, np, plt, scan_periods
 
 
 @app.cell
@@ -128,27 +128,48 @@ def _(best, mo, np, plt, results, true_period):
 
 
 @app.cell
-def _(best, fold_series, mo, plt, series):
-    # Show the folded matrix column means (seasonal profile) for the best period.
-    # In marimo, we must return the final output of the cell, so build it before
-    # the if/else and return the resulting object.
+def _(best, extract_seasonality, mo, plt, series):
+    # Extract the seasonal effect for the detected period and visualize
+    # original / fitted / residual side by side.
     if best:
-        folded = fold_series(series, best.period)
-        means = folded.mean(axis=0)
+        extracted = extract_seasonality(series, best.period)
 
-        fig3, ax3 = plt.subplots(figsize=(8, 3))
-        ax3.bar(range(1, best.period + 1), means, color='steelblue', edgecolor='black')
-        ax3.set_xlabel('Phase')
-        ax3.set_ylabel('Mean value')
-        ax3.set_title(f'Seasonal profile (period = {best.period})')
-        ax3.set_xticks(range(1, best.period + 1))
-        profile_plot = mo.mpl.interactive(fig3)
+        fig3, ax3 = plt.subplots(figsize=(10, 3))
+        ax3.plot(series, lw=0.7, alpha=0.8, label="Original")
+        ax3.plot(extracted.fitted, lw=1.2, label="Fitted seasonal")
+        ax3.set_title(f"Original vs fitted seasonal (period = {best.period})")
+        ax3.set_xlabel("Time")
+        ax3.set_ylabel("Value")
+        ax3.legend()
+        fitted_plot = mo.mpl.interactive(fig3)
+
+        fig4, ax4 = plt.subplots(figsize=(10, 3))
+        ax4.plot(extracted.residual, lw=0.7, color="gray")
+        ax4.axhline(0, color="black", ls="--", lw=0.5)
+        ax4.set_title(f"Residual (explained variance = {extracted.explained_var:.2%})")
+        ax4.set_xlabel("Time")
+        ax4.set_ylabel("Value")
+        residual_plot = mo.mpl.interactive(fig4)
+
+        # Seasonal profile
+        fig5, ax5 = plt.subplots(figsize=(8, 3))
+        ax5.bar(range(1, best.period + 1), extracted.profile, color="steelblue", edgecolor="black")
+        ax5.set_xlabel("Phase")
+        ax5.set_ylabel("Mean value")
+        ax5.set_title(f"Seasonal profile (period = {best.period})")
+        ax5.set_xticks(range(1, best.period + 1))
+        profile_plot = mo.mpl.interactive(fig5)
+
+        extraction_section = mo.vstack([
+            mo.md(f"**Explained variance:** {extracted.explained_var:.2%}"),
+            fitted_plot,
+            residual_plot,
+            profile_plot,
+        ])
     else:
-        profile_plot = mo.md("No significant period detected.")
+        extraction_section = mo.md("No significant period detected; cannot extract seasonality.")
 
-
-    plt.show()
-    return
+    return (extraction_section,)
 
 
 if __name__ == "__main__":
