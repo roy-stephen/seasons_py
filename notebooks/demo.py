@@ -20,8 +20,8 @@ def _():
 
     return (
         detect_seasonality,
-        extract_seasonality,
         extract_multiple_seasonalities,
+        extract_seasonality,
         mo,
         np,
         plt,
@@ -45,28 +45,41 @@ def _(mo):
     """)
 
     mo.md("### Build a synthetic series")
+    use_five_seasons = mo.ui.checkbox(value=False, label="Use 5-seasonality stress-test preset")
     true_period = mo.ui.slider(2, 24, value=7, label="Primary period")
     second_period = mo.ui.slider(2, 24, value=13, label="Secondary period (set equal to primary to disable)")
     noise_std = mo.ui.slider(0.0, 2.0, step=0.1, value=0.5, label="Noise std")
-    n_points = mo.ui.slider(50, 2000, step=50, value=350, label="Series length")
-    max_selected = mo.ui.slider(1, 5, value=3, label="Max periods in joint model")
+    n_points = mo.ui.slider(50, 5000, step=50, value=350, label="Series length")
+    max_selected = mo.ui.slider(1, 8, value=5, label="Max periods in joint model")
 
-    controls = mo.hstack([
-        mo.vstack([true_period, second_period, noise_std]),
-        mo.vstack([n_points, max_selected]),
+    controls = mo.vstack([
+        use_five_seasons,
+        mo.hstack([
+            mo.vstack([true_period, second_period, noise_std]),
+            mo.vstack([n_points, max_selected]),
+        ]),
     ])
     controls
-    return controls, max_selected, n_points, noise_std, second_period, true_period
+    return max_selected, n_points, noise_std, second_period, true_period, use_five_seasons
 
 
 @app.cell
-def _(max_selected, n_points, noise_std, np, second_period, true_period):
+def _(
+    max_selected,
+    n_points,
+    noise_std,
+    np,
+    second_period,
+    true_period,
+    use_five_seasons,
+):
     """Setup: generate the synthetic detrended series."""
     _s1 = true_period.value
     _s2 = second_period.value
     _n = n_points.value
     _sigma = noise_std.value
     _max_selected = max_selected.value
+    _use_five = use_five_seasons.value
 
     np.random.seed(0)
 
@@ -74,28 +87,38 @@ def _(max_selected, n_points, noise_std, np, second_period, true_period):
         p = np.linspace(5.0, -5.0, s) + np.random.normal(0, 1.0, s)
         return p - p.mean()
 
-    # Use the LCM of the two periods as the repeating base so the combined
-    # pattern tiles cleanly for any pair of integer periods.
-    _cycle = (_s1 * _s2) if _s1 != _s2 else _s1
-    base = np.zeros(_cycle)
-    base += np.tile(make_pattern(_s1), _cycle // _s1)
-    if _s2 != _s1:
-        base += np.tile(make_pattern(_s2), _cycle // _s2)
+    if _use_five:
+        # High-dimension stress test: five small co-prime periods.
+        preset_periods = [3, 5, 7, 11, 13]
+        _cycle = int(np.lcm.reduce(preset_periods))
+        base = np.zeros(_cycle)
+        for p in preset_periods:
+            base += np.tile(make_pattern(p), _cycle // p)
+        generator_periods = preset_periods
+    else:
+        # Use the LCM of the two periods as the repeating base so the combined
+        # pattern tiles cleanly for any pair of integer periods.
+        _cycle = (_s1 * _s2) if _s1 != _s2 else _s1
+        base = np.zeros(_cycle)
+        base += np.tile(make_pattern(_s1), _cycle // _s1)
+        if _s2 != _s1:
+            base += np.tile(make_pattern(_s2), _cycle // _s2)
+        generator_periods = [_s1, _s2] if _s2 != _s1 else [_s1]
 
     series = np.tile(base, _n // _cycle + 1)[:_n]
     series = series + np.random.normal(0, _sigma, _n)
-    return (series,)
+    return series, generator_periods
 
 
 @app.cell
-def _(mo, plt, series, true_period, second_period):
+def _(generator_periods, mo, plt, series):
     """Setup: plot the raw series."""
     fig_raw, ax_raw = plt.subplots(figsize=(10, 3))
     ax_raw.plot(series, lw=0.8)
     ax_raw.set_title("Synthetic detrended series")
     ax_raw.set_xlabel("Time")
     ax_raw.set_ylabel("Value")
-    active_periods = f"{true_period.value}" if second_period.value == true_period.value else f"{true_period.value}, {second_period.value}"
+    active_periods = ", ".join(str(p) for p in generator_periods)
     mo.vstack([
         mo.md(f"**True periods in the generator:** {active_periods}"),
         mo.mpl.interactive(fig_raw),
@@ -104,7 +127,7 @@ def _(mo, plt, series, true_period, second_period):
 
 
 @app.cell
-def _(detect_seasonality, mo, scan_periods, series):
+def _(mo):
     """Act 1 — Single-period detection."""
     mo.md("""
     ## 1. Single-period detection
@@ -113,7 +136,11 @@ def _(detect_seasonality, mo, scan_periods, series):
     Each period is tested by folding the series into that many phase buckets and running
     a one-way ANOVA. The p-value is Bonferroni-corrected over all candidates.
     """)
+    return
 
+
+@app.cell
+def _(detect_seasonality, mo, scan_periods, series):
     results = scan_periods(series)
     best = detect_seasonality(series)
 
@@ -135,7 +162,7 @@ def _(detect_seasonality, mo, scan_periods, series):
 
 
 @app.cell
-def _(best, mo, np, plt, results, true_period, second_period):
+def _(best, generator_periods, mo, np, plt, results):
     """Act 1 — single-period evidence plot."""
     n_tests = len(results)
     corrected_alpha = 0.05 / n_tests if n_tests > 0 else 0.05
@@ -152,8 +179,7 @@ def _(best, mo, np, plt, results, true_period, second_period):
     ax_evidence.stem(periods, capped_logp, basefmt=" ", linefmt="C0-", markerfmt="C0o", label="-log10(p)")
     ax_evidence.axhline(sig_line, color="red", ls="--", lw=1, label=f"α_corr = {corrected_alpha:.2e}")
 
-    true_periods_set = {true_period.value, second_period.value} if second_period.value != true_period.value else {true_period.value}
-    for tp in true_periods_set:
+    for tp in generator_periods:
         ax_evidence.axvline(tp, color="green", ls="--", lw=1.5, alpha=0.7)
     if best:
         ax_evidence.axvline(best.period, color="orange", ls="-", lw=2, alpha=0.7, label="Detected")
@@ -169,7 +195,7 @@ def _(best, mo, np, plt, results, true_period, second_period):
         f"Values capped at {int(cap)}: {n_capped} period(s) had extremely small p-values."
     )
     mo.vstack([mo.md(f"*{note}*"), mo.mpl.interactive(fig_evidence)])
-    return None
+    return
 
 
 @app.cell
@@ -212,11 +238,19 @@ def _(best, extract_seasonality, mo, plt, series):
         ])
 
     single_section
-    return None
+    return
 
 
 @app.cell
-def _(max_selected, mo, results, select_seasonalities, series, true_period, second_period):
+def _(
+    max_selected,
+    generator_periods,
+    mo,
+    results,
+    select_seasonalities,
+    series,
+    use_five_seasons,
+):
     """Act 2 — multiple-period selection (the main feature)."""
     mo.md("""
     ## 2. Multiple-period extraction (joint OLS)
@@ -232,6 +266,10 @@ def _(max_selected, mo, results, select_seasonalities, series, true_period, seco
     21 hiding the pair `{3, 7}`.
     """)
 
+    if use_five_seasons.value:
+        mo.md("*Stress-test mode active: the generator contains 5 co-prime seasonalities. "
+               "Make sure **Max periods in joint model** is set to 5 or more to see all of them.*")
+
     # Candidates are the periods that pass the uncorrected significance screen.
     candidate_periods = [r.period for r in results if r.p_value < 0.05]
     if not candidate_periods:
@@ -244,7 +282,7 @@ def _(max_selected, mo, results, select_seasonalities, series, true_period, seco
         max_periods=max_selected.value,
     )
 
-    true_periods_str = f"{true_period.value}" if second_period.value == true_period.value else f"{true_period.value}, {second_period.value}"
+    true_periods_str = ", ".join(str(p) for p in generator_periods)
     mo.md(
         f"""
         **Candidate pool:** {len(candidate_periods)} periods
@@ -281,13 +319,13 @@ def _(extract_multiple_seasonalities, mo, plt, selected, series):
         ax_joint_res.set_ylabel("Value")
 
         profile_plots = []
-        for s in multi.periods:
+        for period in multi.periods:
             fig_prof, ax_prof = plt.subplots(figsize=(5, 2.5))
-            ax_prof.bar(range(1, s + 1), multi.components[s].profile, color="steelblue", edgecolor="black")
+            ax_prof.bar(range(1, period + 1), multi.components[period].profile, color="steelblue", edgecolor="black")
             ax_prof.set_xlabel("Phase")
             ax_prof.set_ylabel("Effect")
-            ax_prof.set_title(f"Period {s} (share {multi.components[s].explained_var:.1%})")
-            ax_prof.set_xticks(range(1, s + 1))
+            ax_prof.set_title(f"Period {period} (share {multi.components[period].explained_var:.1%})")
+            ax_prof.set_xticks(range(1, period + 1))
             profile_plots.append(mo.mpl.interactive(fig_prof))
 
         multi_section = mo.vstack([
@@ -297,7 +335,7 @@ def _(extract_multiple_seasonalities, mo, plt, selected, series):
         ])
 
     multi_section
-    return None
+    return
 
 
 @app.cell
