@@ -18,7 +18,6 @@ def _():
         extract_multiple_seasonalities,
         extract_calendar_seasonality,
         select_seasonalities,
-        detrend,
     )
 
     return (
@@ -26,7 +25,6 @@ def _():
         extract_multiple_seasonalities,
         extract_seasonality,
         extract_calendar_seasonality,
-        detrend,
         mo,
         np,
         pd,
@@ -42,16 +40,17 @@ def _(mo):
     mo.md("""
     # seasons_py demo
 
-    This notebook walks through a complete pipeline:
-    1. **Generate a raw series** with an explicit trend, seasonal effects, and noise.
-    2. **Detrend** the raw series.
-    3. **Extract seasonality** from the detrended data — either integer-period cycles or calendar rules.
+    **Assumptions:** the input series is already detrended.
 
-    The seasonality extractor still assumes its input is detrended; the demo now makes that step visible.
+    This notebook walks through three ideas:
+    1. **Single-period extraction** — detect one integer seasonality and extract its profile.
+    2. **Multiple-period extraction** — select and estimate several integer seasonalities *jointly*,
+       so that each effect is conditioned on the others.
+    3. **Calendar seasonality** — same joint estimator, but phases come from a `DatetimeIndex`
+       (day-of-week, month-of-year, day-of-month, etc.).
     """)
 
     mo.md("### Build a synthetic series")
-    add_trend = mo.ui.checkbox(value=True, label="Add a linear trend to the raw series")
     demo_mode = mo.ui.dropdown(
         options=["integer periods", "calendar rules", "5-seasonality stress test"],
         value="integer periods",
@@ -70,19 +69,17 @@ def _(mo):
 
     controls = mo.vstack([
         demo_mode,
-        add_trend,
         mo.hstack([
             mo.vstack([true_period, second_period, noise_std]),
             mo.vstack([n_points, max_selected, calendar_rules]),
         ]),
     ])
     controls
-    return add_trend, calendar_rules, demo_mode, max_selected, n_points, noise_std, second_period, true_period
+    return calendar_rules, demo_mode, max_selected, n_points, noise_std, second_period, true_period
 
 
 @app.cell
 def _(
-    add_trend,
     calendar_rules,
     max_selected,
     n_points,
@@ -93,7 +90,7 @@ def _(
     true_period,
     demo_mode,
 ):
-    """Setup: generate the raw synthetic series (with optional trend)."""
+    """Setup: generate the synthetic detrended series."""
     _mode = demo_mode.value
     _s1 = true_period.value
     _s2 = second_period.value
@@ -153,67 +150,25 @@ def _(
         generator_periods = [_s1, _s2] if _s2 != _s1 else [_s1]
         index = None
 
-    # Add optional linear trend so the notebook can demonstrate detrending.
-    if add_trend.value:
-        _synthetic_trend = np.linspace(-2.0, 8.0, len(series))
-        raw_series = series + _synthetic_trend
-    else:
-        raw_series = series.copy()
-
-    raw_series = raw_series + np.random.normal(0, _sigma, len(raw_series))
-    return raw_series, generator_periods, index, _rules
+    series = series + np.random.normal(0, _sigma, len(series))
+    return series, generator_periods, index, _rules
 
 
 @app.cell
-def _(detrend, generator_periods, index, mo, np, plt, raw_series):
-    """Setup: detrend and plot raw vs detrended."""
-    detrended_series, trend = detrend(raw_series, method="linear")
-
+def _(generator_periods, index, mo, plt, series):
+    """Setup: plot the raw series."""
     fig_raw, ax_raw = plt.subplots(figsize=(10, 3))
-    ax_raw.plot(raw_series, lw=0.8, label="Raw series")
-    ax_raw.plot(trend, lw=1.2, ls="--", label="Fitted trend")
-    ax_raw.set_title("Raw synthetic series")
+    ax_raw.plot(series, lw=0.8)
+    ax_raw.set_title("Synthetic detrended series")
     ax_raw.set_xlabel("Time")
     ax_raw.set_ylabel("Value")
-    ax_raw.legend()
-
-    fig_detrend, ax_detrend = plt.subplots(figsize=(10, 3))
-    ax_detrend.plot(detrended_series, lw=0.8)
-    ax_detrend.set_title("Detrended series (used for extraction)")
-    ax_detrend.set_xlabel("Time")
-    ax_detrend.set_ylabel("Value")
-
     active_periods = ", ".join(str(p) for p in generator_periods)
     index_note = f"Index: {index[0].date()} to {index[-1].date()}" if index is not None else "Index: positional integer index"
     mo.vstack([
         mo.md(f"**True periods / rules in the generator:** {active_periods}"),
         mo.md(f"*{index_note}*"),
         mo.mpl.interactive(fig_raw),
-        mo.mpl.interactive(fig_detrend),
     ])
-    return detrended_series, trend
-
-
-@app.cell
-def _(detrended_series, mo, np):
-    """Act 0 — confirm stationarity assumption."""
-    _mean = float(np.mean(detrended_series))
-    _slope = float(np.linalg.lstsq(
-        np.column_stack([np.ones(len(detrended_series)), np.arange(len(detrended_series))]),
-        detrended_series,
-        rcond=None,
-    )[0][1])
-    mo.md(
-        f"""
-        **Detrended series diagnostics**
-
-        - Mean: {_mean:.3f}
-        - Residual linear slope: {_slope:.2e}
-
-        The extractor below assumes the input is detrended. If the slope is not essentially zero,
-        detrending has failed.
-        """
-    )
     return
 
 
@@ -223,7 +178,7 @@ def _(mo):
     mo.md("""
     ## 1. Single-period detection
 
-    The simplest use case on the detrended series: scan candidate periods and return the most significant one.
+    The simplest use case: scan candidate periods and return the most significant one.
     Each period is tested by folding the series into that many phase buckets and running
     a one-way ANOVA. The p-value is Bonferroni-corrected over all candidates.
     """)
@@ -231,9 +186,9 @@ def _(mo):
 
 
 @app.cell
-def _(detect_seasonality, detrended_series, mo, scan_periods):
-    results = scan_periods(detrended_series)
-    best = detect_seasonality(detrended_series)
+def _(detect_seasonality, mo, scan_periods, series):
+    results = scan_periods(series)
+    best = detect_seasonality(series)
 
     _detected = best.period if best else "None"
     _pval = f"{best.p_value:.2e}" if best else "N/A"
@@ -253,7 +208,7 @@ def _(detect_seasonality, detrended_series, mo, scan_periods):
 
 
 @app.cell
-def _(best, detrended_series, generator_periods, mo, np, plt, results):
+def _(best, generator_periods, mo, np, plt, results):
     """Act 1 — single-period evidence plot."""
     n_tests = len(results)
     corrected_alpha = 0.05 / n_tests if n_tests > 0 else 0.05
@@ -271,11 +226,7 @@ def _(best, detrended_series, generator_periods, mo, np, plt, results):
     ax_evidence.axhline(sig_line, color="red", ls="--", lw=1, label=f"α_corr = {corrected_alpha:.2e}")
 
     for tp in generator_periods:
-        try:
-            period_val = int(tp)
-            ax_evidence.axvline(period_val, color="green", ls="--", lw=1.5, alpha=0.7)
-        except (ValueError, TypeError):
-            continue
+        ax_evidence.axvline(tp, color="green", ls="--", lw=1.5, alpha=0.7)
     if best:
         ax_evidence.axvline(best.period, color="orange", ls="-", lw=2, alpha=0.7, label="Detected")
 
@@ -294,17 +245,17 @@ def _(best, detrended_series, generator_periods, mo, np, plt, results):
 
 
 @app.cell
-def _(best, detrended_series, extract_seasonality, mo, plt):
+def _(best, extract_seasonality, mo, plt, series):
     """Act 1 — single-period extraction (fit / residual / profile)."""
     mo.md("### Extract the single detected seasonality")
 
-    extracted = extract_seasonality(detrended_series, best.period) if best else None
+    extracted = extract_seasonality(series, best.period) if best else None
 
     if extracted is None:
         single_section = mo.md("No significant period was detected, so single extraction is skipped.")
     else:
         fig_single_fit, ax_single_fit = plt.subplots(figsize=(10, 3))
-        ax_single_fit.plot(detrended_series, lw=0.7, alpha=0.8, label="Original")
+        ax_single_fit.plot(series, lw=0.7, alpha=0.8, label="Original")
         ax_single_fit.plot(extracted.fitted, lw=1.2, label="Fitted seasonal")
         ax_single_fit.set_title(f"Original vs fitted seasonal (period = {best.period})")
         ax_single_fit.set_xlabel("Time")
@@ -312,7 +263,7 @@ def _(best, detrended_series, extract_seasonality, mo, plt):
         ax_single_fit.legend()
 
         fig_single_res, ax_single_res = plt.subplots(figsize=(10, 3))
-        residual = detrended_series - extracted.fitted
+        residual = series - extracted.fitted
         ax_single_res.plot(residual, lw=0.7, color="gray")
         ax_single_res.axhline(0, color="black", ls="--", lw=0.5)
         ax_single_res.set_title(f"Residual (single-fit explained variance = {extracted.explained_var:.2%})")
@@ -339,12 +290,12 @@ def _(best, detrended_series, extract_seasonality, mo, plt):
 @app.cell
 def _(
     demo_mode,
-    detrended_series,
     extract_calendar_seasonality,
     max_selected,
     mo,
     results,
     select_seasonalities,
+    series,
     index,
     generator_periods,
 ):
@@ -367,7 +318,7 @@ def _(
 
     if demo_mode.value == "calendar rules":
         # Calendar mode: directly fit the selected rules.
-        cal_out = extract_calendar_seasonality(detrended_series, index, generator_periods)
+        cal_out = extract_calendar_seasonality(series, index, generator_periods)
         selected = cal_out["rules"]
         multi_result = cal_out["result"]
         mode_note = "calendar"
@@ -377,12 +328,12 @@ def _(
         if not candidate_periods:
             candidate_periods = [r.period for r in results[:10]]
         selected = select_seasonalities(
-            detrended_series,
+            series,
             candidate_periods,
             criterion="bic",
             max_periods=max_selected.value,
         )
-        multi_result = extract_multiple_seasonalities(detrended_series, selected)
+        multi_result = extract_multiple_seasonalities(series, selected)
         mode_note = "integer periods"
 
     true_periods_str = ", ".join(str(p) for p in generator_periods)
@@ -399,7 +350,7 @@ def _(
 
 
 @app.cell
-def _(demo_mode, detrended_series, mo, plt, multi_result):
+def _(demo_mode, mo, plt, multi_result, series):
     """Act 2 — joint fit, residual, and per-component profiles."""
     multi = multi_result
 
@@ -407,7 +358,7 @@ def _(demo_mode, detrended_series, mo, plt, multi_result):
         multi_section = mo.md("No periods / rules were selected, so the joint model is empty.")
     else:
         fig_joint, ax_joint = plt.subplots(figsize=(10, 3))
-        ax_joint.plot(detrended_series, lw=0.7, alpha=0.8, label="Original")
+        ax_joint.plot(series, lw=0.7, alpha=0.8, label="Original")
         ax_joint.plot(multi.fitted, lw=1.2, label="Joint fitted seasonal")
         ax_joint.set_title(f"Joint fit ({multi.periods})")
         ax_joint.set_xlabel("Time")
