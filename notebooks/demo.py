@@ -123,18 +123,23 @@ def _(
         for rule in _rules:
             if rule == "dow":
                 dow_profile = np.array([3.0, 1.0, 0.0, 0.0, -2.0, -1.0, 1.0])
+                dow_profile = dow_profile - dow_profile.mean()
                 series += dow_profile[index.dayofweek]
             elif rule == "month":
                 month_profile = np.array([4.0, 3.0, 2.0, 0.0, -1.0, -3.0, -4.0, -3.0, -2.0, 0.0, 1.0, 3.0])
+                month_profile = month_profile - month_profile.mean()
                 series += month_profile[index.month - 1]
             elif rule == "dom":
                 dom_profile = np.zeros(31)
                 dom_profile[0] = 3.0
                 dom_profile[14] = -2.0
+                dom_profile = dom_profile - dom_profile.mean()
                 series += dom_profile[index.day - 1]
             elif rule == "quarter":
                 quarter_profile = np.array([-2.0, 1.0, 2.0, -1.0])
+                quarter_profile = quarter_profile - quarter_profile.mean()
                 series += quarter_profile[index.quarter - 1]
+        series = series - series.mean()  # ensure zero-mean detrended signal
         series = series[:_n]
         index = index[:_n]
         generator_periods = _rules
@@ -155,8 +160,15 @@ def _(
 
 
 @app.cell
-def _(generator_periods, index, mo, plt, series):
-    """Setup: plot the raw series."""
+def _(generator_periods, index, mo, np, plt, series):
+    """Setup: plot the detrended series and verify mean/slope."""
+    _mean = float(np.mean(series))
+    _slope = float(np.linalg.lstsq(
+        np.column_stack([np.ones(len(series)), np.arange(len(series))]),
+        series,
+        rcond=None,
+    )[0][1])
+
     fig_raw, ax_raw = plt.subplots(figsize=(10, 3))
     ax_raw.plot(series, lw=0.8)
     ax_raw.set_title("Synthetic detrended series")
@@ -167,6 +179,10 @@ def _(generator_periods, index, mo, plt, series):
     mo.vstack([
         mo.md(f"**True periods / rules in the generator:** {active_periods}"),
         mo.md(f"*{index_note}*"),
+        mo.md(
+            f"**Detrended check:** mean = `{_mean:.3f}`, residual linear slope = `{_slope:.2e}`. "
+            f"These should be essentially zero."
+        ),
         mo.mpl.interactive(fig_raw),
     ])
     return
