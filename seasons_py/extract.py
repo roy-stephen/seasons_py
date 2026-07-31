@@ -52,22 +52,38 @@ class MultiSeasonalityResult:
 
 def _build_design_matrix(n: int, periods: list[int]) -> tuple[np.ndarray, list[int]]:
     """
-    Build the design matrix for a joint regression of multiple seasonalities.
+    Build the design matrix for a joint regression of multiple integer-period
+    seasonalities.
 
     Each period contributes `period - 1` columns with a sum-to-zero constraint:
     the coefficient for the last phase is minus the sum of the others. The j-th
     column is +1 when phase == j and -1 when phase == last, so that the fitted
     profile tiles correctly.
     """
+    phase_arrays = [np.arange(n) % s for s in periods]
+    return _build_design_from_phases(n, periods, phase_arrays)
+
+
+def _build_design_from_phases(
+    n: int,
+    periods: list[int],
+    phase_arrays: list[np.ndarray],
+) -> tuple[np.ndarray, list[int]]:
+    """
+    Build the design matrix from explicit phase arrays.
+
+    `periods[i]` is the one-hot width for component i; `phase_arrays[i]` is the
+    phase at each observation (shape (n,)). Phases must be non-negative integers
+    smaller than the corresponding period width.
+    """
     blocks: list[np.ndarray] = []
     offsets: list[int] = []
     offset = 0
 
-    for s in periods:
+    for s, phase in zip(periods, phase_arrays):
         offsets.append(offset)
-        phase = np.arange(n) % s
         onehot = np.zeros((n, s), dtype=float)
-        onehot[np.arange(n), phase] = 1.0
+        onehot[np.arange(n), phase.astype(int)] = 1.0
         # Sum-to-zero: columns 0..s-2 relative to the dropped last column.
         block = onehot[:, :-1] - onehot[:, -1:]
         blocks.append(block)
@@ -98,6 +114,7 @@ def _model_rss_and_k(series: np.ndarray, periods: list[int]) -> tuple[float, flo
 def extract_multiple_seasonalities(
     series: np.ndarray,
     periods: list[int],
+    phase_arrays: Optional[list[np.ndarray]] = None,
 ) -> MultiSeasonalityResult:
     """
     Fit multiple integer seasonalities jointly via OLS.
@@ -107,7 +124,11 @@ def extract_multiple_seasonalities(
     series : array-like, shape (n,)
         The (assumed detrended) time series.
     periods : list[int]
-        Integer periods to fit jointly.
+        Integer period widths (one-hot matrix width) for each component.
+    phase_arrays : list[np.ndarray] or None
+        Optional explicit phase arrays, one per component. If None, phases are
+        assumed to be `np.arange(n) % periods[i]`. Use explicit phases for
+        calendar seasonality where the mapping is not a simple modulo.
 
     Returns
     -------
@@ -126,8 +147,13 @@ def extract_multiple_seasonalities(
             total_explained_var=0.0,
         )
 
+    if phase_arrays is None:
+        phase_arrays = [np.arange(n) % s for s in periods]
+    else:
+        phase_arrays = [np.asarray(p, dtype=int) for p in phase_arrays]
+
     y = series - series.mean()
-    X, offsets = _build_design_matrix(n, periods)
+    X, offsets = _build_design_from_phases(n, periods, phase_arrays)
     coeffs, *_ = np.linalg.lstsq(X, y, rcond=None)
 
     components: dict[int, SeasonalityResult] = {}
@@ -136,7 +162,8 @@ def extract_multiple_seasonalities(
         start = offsets[i]
         period_coeffs = coeffs[start : start + s - 1] if s > 1 else np.array([])
         profile = _profile_from_coeffs(period_coeffs, s)
-        fitted = np.tile(profile, (n // s) + 1)[:n]
+        phase = phase_arrays[i]
+        fitted = profile[phase]
         fitted_total += fitted
         components[s] = SeasonalityResult(
             period=s,

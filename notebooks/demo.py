@@ -9,12 +9,14 @@ def _():
     """Setup: imports and public API."""
     import marimo as mo
     import numpy as np
+    import pandas as pd
     import matplotlib.pyplot as plt
     from seasons_py import (
         detect_seasonality,
         scan_periods,
         extract_seasonality,
         extract_multiple_seasonalities,
+        extract_calendar_seasonality,
         select_seasonalities,
     )
 
@@ -22,8 +24,10 @@ def _():
         detect_seasonality,
         extract_multiple_seasonalities,
         extract_seasonality,
+        extract_calendar_seasonality,
         mo,
         np,
+        pd,
         plt,
         scan_periods,
         select_seasonalities,
@@ -36,50 +40,64 @@ def _(mo):
     mo.md("""
     # seasons_py demo
 
-    **Assumptions:** the input series is already detrended, and seasonal periods are integer-valued.
+    **Assumptions:** the input series is already detrended.
 
-    This notebook walks through two ideas:
-    1. **Single-period extraction** — detect one seasonality and extract its profile.
-    2. **Multiple-period extraction** — the main point: select and estimate several seasonalities *jointly*,
+    This notebook walks through three ideas:
+    1. **Single-period extraction** — detect one integer seasonality and extract its profile.
+    2. **Multiple-period extraction** — select and estimate several integer seasonalities *jointly*,
        so that each effect is conditioned on the others.
+    3. **Calendar seasonality** — same joint estimator, but phases come from a `DatetimeIndex`
+       (day-of-week, month-of-year, day-of-month, etc.).
     """)
 
     mo.md("### Build a synthetic series")
-    use_five_seasons = mo.ui.checkbox(value=False, label="Use 5-seasonality stress-test preset")
+    demo_mode = mo.ui.dropdown(
+        options=["integer periods", "calendar rules", "5-seasonality stress test"],
+        value="integer periods",
+        label="Demo mode",
+    )
     true_period = mo.ui.slider(2, 24, value=7, label="Primary period")
     second_period = mo.ui.slider(2, 24, value=13, label="Secondary period (set equal to primary to disable)")
     noise_std = mo.ui.slider(0.0, 2.0, step=0.1, value=0.5, label="Noise std")
     n_points = mo.ui.slider(50, 5000, step=50, value=350, label="Series length")
     max_selected = mo.ui.slider(1, 8, value=5, label="Max periods in joint model")
+    calendar_rules = mo.ui.dropdown(
+        options=["dow,month", "dow,dom", "dow,month,dom", "month,quarter"],
+        value="dow,month",
+        label="Calendar rules",
+    )
 
     controls = mo.vstack([
-        use_five_seasons,
+        demo_mode,
         mo.hstack([
             mo.vstack([true_period, second_period, noise_std]),
-            mo.vstack([n_points, max_selected]),
+            mo.vstack([n_points, max_selected, calendar_rules]),
         ]),
     ])
     controls
-    return max_selected, n_points, noise_std, second_period, true_period, use_five_seasons
+    return calendar_rules, demo_mode, max_selected, n_points, noise_std, second_period, true_period
 
 
 @app.cell
 def _(
+    calendar_rules,
     max_selected,
     n_points,
     noise_std,
     np,
+    pd,
     second_period,
     true_period,
-    use_five_seasons,
+    demo_mode,
 ):
     """Setup: generate the synthetic detrended series."""
+    _mode = demo_mode.value
     _s1 = true_period.value
     _s2 = second_period.value
     _n = n_points.value
     _sigma = noise_std.value
     _max_selected = max_selected.value
-    _use_five = use_five_seasons.value
+    _rules = [r.strip() for r in calendar_rules.value.split(",")]
 
     np.random.seed(0)
 
@@ -87,14 +105,39 @@ def _(
         p = np.linspace(5.0, -5.0, s) + np.random.normal(0, 1.0, s)
         return p - p.mean()
 
-    if _use_five:
+    if _mode == "5-seasonality stress test":
         # High-dimension stress test: five small co-prime periods.
         preset_periods = [3, 5, 7, 11, 13]
         _cycle = int(np.lcm.reduce(preset_periods))
         base = np.zeros(_cycle)
         for p in preset_periods:
             base += np.tile(make_pattern(p), _cycle // p)
+        series = np.tile(base, _n // _cycle + 1)[:_n]
         generator_periods = preset_periods
+        index = None
+    elif _mode == "calendar rules":
+        # Daily calendar seasonality.
+        _n_obs = max(_n, 365 * 2)
+        index = pd.date_range("2020-01-01", periods=_n_obs, freq="D")
+        series = np.zeros(_n_obs)
+        for rule in _rules:
+            if rule == "dow":
+                dow_profile = np.array([3.0, 1.0, 0.0, 0.0, -2.0, -1.0, 1.0])
+                series += dow_profile[index.dayofweek]
+            elif rule == "month":
+                month_profile = np.array([4.0, 3.0, 2.0, 0.0, -1.0, -3.0, -4.0, -3.0, -2.0, 0.0, 1.0, 3.0])
+                series += month_profile[index.month - 1]
+            elif rule == "dom":
+                dom_profile = np.zeros(31)
+                dom_profile[0] = 3.0
+                dom_profile[14] = -2.0
+                series += dom_profile[index.day - 1]
+            elif rule == "quarter":
+                quarter_profile = np.array([-2.0, 1.0, 2.0, -1.0])
+                series += quarter_profile[index.quarter - 1]
+        series = series[:_n]
+        index = index[:_n]
+        generator_periods = _rules
     else:
         # Use the LCM of the two periods as the repeating base so the combined
         # pattern tiles cleanly for any pair of integer periods.
@@ -103,15 +146,16 @@ def _(
         base += np.tile(make_pattern(_s1), _cycle // _s1)
         if _s2 != _s1:
             base += np.tile(make_pattern(_s2), _cycle // _s2)
+        series = np.tile(base, _n // _cycle + 1)[:_n]
         generator_periods = [_s1, _s2] if _s2 != _s1 else [_s1]
+        index = None
 
-    series = np.tile(base, _n // _cycle + 1)[:_n]
-    series = series + np.random.normal(0, _sigma, _n)
-    return series, generator_periods
+    series = series + np.random.normal(0, _sigma, len(series))
+    return series, generator_periods, index, _rules
 
 
 @app.cell
-def _(generator_periods, mo, plt, series):
+def _(generator_periods, index, mo, plt, series):
     """Setup: plot the raw series."""
     fig_raw, ax_raw = plt.subplots(figsize=(10, 3))
     ax_raw.plot(series, lw=0.8)
@@ -119,8 +163,10 @@ def _(generator_periods, mo, plt, series):
     ax_raw.set_xlabel("Time")
     ax_raw.set_ylabel("Value")
     active_periods = ", ".join(str(p) for p in generator_periods)
+    index_note = f"Index: {index[0].date()} to {index[-1].date()}" if index is not None else "Index: positional integer index"
     mo.vstack([
-        mo.md(f"**True periods in the generator:** {active_periods}"),
+        mo.md(f"**True periods / rules in the generator:** {active_periods}"),
+        mo.md(f"*{index_note}*"),
         mo.mpl.interactive(fig_raw),
     ])
     return
@@ -243,70 +289,78 @@ def _(best, extract_seasonality, mo, plt, series):
 
 @app.cell
 def _(
+    demo_mode,
+    extract_calendar_seasonality,
     max_selected,
-    generator_periods,
     mo,
     results,
     select_seasonalities,
     series,
-    use_five_seasons,
+    index,
+    generator_periods,
 ):
     """Act 2 — multiple-period selection (the main feature)."""
     mo.md("""
-    ## 2. Multiple-period extraction (joint OLS)
+    ## 2. Multiple-period / calendar extraction (joint OLS)
 
     This is the main idea: instead of detecting periods one at a time and subtracting them,
     we **select a set of candidate periods and fit all of their seasonal profiles simultaneously**
     with one linear model. Each profile is estimated conditioning on the others, so the result is
     order-independent.
 
-    Selection uses a forward step: at each step we add the candidate whose inclusion most improves
-    the BIC, with a preference for shorter fundamental periods. After selection, a divisor check
-    replaces a larger period by its divisors when that improves BIC — this prevents LCMs such as
-    21 hiding the pair `{3, 7}`.
+    For integer periods, selection uses a forward step with BIC and a divisor factorization pass.
+    For calendar rules, we fit the chosen rules jointly directly.
     """)
 
-    if use_five_seasons.value:
+    if demo_mode.value == "5-seasonality stress test":
         mo.md("*Stress-test mode active: the generator contains 5 co-prime seasonalities. "
                "Make sure **Max periods in joint model** is set to 5 or more to see all of them.*")
 
-    # Candidates are the periods that pass the uncorrected significance screen.
-    candidate_periods = [r.period for r in results if r.p_value < 0.05]
-    if not candidate_periods:
-        candidate_periods = [r.period for r in results[:10]]
-
-    selected = select_seasonalities(
-        series,
-        candidate_periods,
-        criterion="bic",
-        max_periods=max_selected.value,
-    )
+    if demo_mode.value == "calendar rules":
+        # Calendar mode: directly fit the selected rules.
+        cal_out = extract_calendar_seasonality(series, index, generator_periods)
+        selected = cal_out["rules"]
+        multi_result = cal_out["result"]
+        mode_note = "calendar"
+    else:
+        # Integer mode: select from ANOVA candidates.
+        candidate_periods = [r.period for r in results if r.p_value < 0.05]
+        if not candidate_periods:
+            candidate_periods = [r.period for r in results[:10]]
+        selected = select_seasonalities(
+            series,
+            candidate_periods,
+            criterion="bic",
+            max_periods=max_selected.value,
+        )
+        multi_result = extract_multiple_seasonalities(series, selected)
+        mode_note = "integer periods"
 
     true_periods_str = ", ".join(str(p) for p in generator_periods)
     mo.md(
         f"""
-        **Candidate pool:** {len(candidate_periods)} periods
+        **Mode:** {mode_note}
 
-        **Selected by BIC:** {selected}
+        **Selected / fitted:** {selected}
 
-        **True generator periods:** {true_periods_str}
+        **True generator periods / rules:** {true_periods_str}
         """
     )
-    return (selected,)
+    return (multi_result,)
 
 
 @app.cell
-def _(extract_multiple_seasonalities, mo, plt, selected, series):
+def _(demo_mode, mo, plt, multi_result, series):
     """Act 2 — joint fit, residual, and per-component profiles."""
-    multi = extract_multiple_seasonalities(series, selected) if selected else None
+    multi = multi_result
 
-    if multi is None:
-        multi_section = mo.md("No periods were selected, so the joint model is empty.")
+    if multi is None or not multi.periods:
+        multi_section = mo.md("No periods / rules were selected, so the joint model is empty.")
     else:
         fig_joint, ax_joint = plt.subplots(figsize=(10, 3))
         ax_joint.plot(series, lw=0.7, alpha=0.8, label="Original")
         ax_joint.plot(multi.fitted, lw=1.2, label="Joint fitted seasonal")
-        ax_joint.set_title(f"Joint fit (periods = {selected})")
+        ax_joint.set_title(f"Joint fit ({multi.periods})")
         ax_joint.set_xlabel("Time")
         ax_joint.set_ylabel("Value")
         ax_joint.legend()
@@ -318,14 +372,29 @@ def _(extract_multiple_seasonalities, mo, plt, selected, series):
         ax_joint_res.set_xlabel("Time")
         ax_joint_res.set_ylabel("Value")
 
+        # Use rule names for labels when in calendar mode.
+        label_by_period = {}
+        if demo_mode.value == "calendar rules" and hasattr(multi_result, "components_by_rule"):
+            label_by_period = {comp.period: rule for rule, comp in multi_result.components_by_rule.items()}
+
         profile_plots = []
         for period in multi.periods:
             fig_prof, ax_prof = plt.subplots(figsize=(5, 2.5))
-            ax_prof.bar(range(1, period + 1), multi.components[period].profile, color="steelblue", edgecolor="black")
+            label = label_by_period.get(period, f"Period {period}")
+            profile = multi.components[period].profile
+            # For calendar rules, phase 0 may be unused; drop leading zeros from the plot.
+            if demo_mode.value == "calendar rules":
+                first_used = next((i for i, v in enumerate(profile) if abs(v) > 1e-12), 0)
+                x_positions = list(range(first_used, len(profile)))
+                profile_plot = profile[first_used:]
+            else:
+                x_positions = list(range(1, period + 1))
+                profile_plot = profile
+            ax_prof.bar(x_positions, profile_plot, color="steelblue", edgecolor="black")
             ax_prof.set_xlabel("Phase")
             ax_prof.set_ylabel("Effect")
-            ax_prof.set_title(f"Period {period} (share {multi.components[period].explained_var:.1%})")
-            ax_prof.set_xticks(range(1, period + 1))
+            ax_prof.set_title(f"{label} (share {multi.components[period].explained_var:.1%})")
+            ax_prof.set_xticks(x_positions)
             profile_plots.append(mo.mpl.interactive(fig_prof))
 
         multi_section = mo.vstack([
@@ -345,11 +414,11 @@ def _(mo):
     ### Takeaway
 
     - **Single detection** is a good first look, but it is greedy and order-sensitive.
-    - **Joint extraction** is the recommended workflow when you suspect more than one seasonality:
-      give it a candidate list (or the whole `scan_periods` output) and let BIC decide
-      which periods earn their keep.
-    - The fitted signal is a deterministic tiling of each learned profile from index 0, and the
-      residual is simply `series - fitted`.
+    - **Joint extraction** is the recommended workflow when you suspect more than one seasonality.
+    - For **integer periods**, let BIC select from `scan_periods` candidates.
+    - For **calendar rules**, pass a `DatetimeIndex` and the rule names directly.
+    - The fitted signal is a deterministic tiling of each learned profile, and the residual is
+      simply `series - fitted`.
     """)
     return
 
