@@ -40,38 +40,6 @@ def _():
     _ACCENT = "#2c3e50"
     _ACCENT_LIGHT = "#5d7a99"
     _MUTED = "#95a5a6"
-    _BG = "#fafafa"
-
-    def _clean_axes(ax):
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        ax.spines["left"].set_color(_MUTED)
-        ax.spines["bottom"].set_color(_MUTED)
-        ax.tick_params(axis="both", colors="#555555", labelsize=9)
-        ax.set_facecolor(_BG)
-        ax.grid(axis="y", color="#e0e0e0", lw=0.5, ls="-")
-
-    def plot_fit_and_residual(plt, series, fitted, residual, total_explained, title=""):
-        fig, axes = plt.subplots(2, 1, figsize=(10, 5), sharex=True)
-        fig.patch.set_facecolor("white")
-        ax0, ax1 = axes
-
-        ax0.plot(series, lw=0.7, color=_MUTED, alpha=0.7, label="Original")
-        ax0.plot(fitted, lw=1.6, color=_ACCENT, label="Fitted seasonal")
-        ax0.set_title(f"{title}\nTotal explained variance: {total_explained:.1%}", loc="left", fontsize=11)
-        ax0.set_ylabel("Value", fontsize=9)
-        ax0.legend(frameon=False, loc="upper right")
-        _clean_axes(ax0)
-
-        ax1.plot(residual, lw=0.7, color=_MUTED)
-        ax1.axhline(0, color=_ACCENT, ls="--", lw=1.0)
-        ax1.set_title("Residual", loc="left", fontsize=11)
-        ax1.set_xlabel("Time", fontsize=9)
-        ax1.set_ylabel("Value", fontsize=9)
-        _clean_axes(ax1)
-
-        fig.tight_layout()
-        return fig
 
     def _label_for_period(period, rule):
         if rule == "dow":
@@ -84,6 +52,26 @@ def _():
             return [str(i) for i in range(1, period + 1)]
         return [str(i) for i in range(1, period + 1)]
 
+    def plot_fit_and_residual(plt, series, fitted, residual, total_explained, title=""):
+        with plt.style.context("seaborn-v0_8-whitegrid"):
+            fig, axes = plt.subplots(2, 1, figsize=(10, 5), sharex=True)
+            ax0, ax1 = axes
+
+            ax0.plot(series, lw=0.7, color=_MUTED, alpha=0.7, label="Original")
+            ax0.plot(fitted, lw=1.6, color=_ACCENT, label="Fitted seasonal")
+            ax0.set_title(f"{title}\nTotal explained variance: {total_explained:.1%}", loc="left", fontsize=11)
+            ax0.set_ylabel("Value", fontsize=9)
+            ax0.legend(frameon=True, fancybox=False, edgecolor="white", loc="upper right")
+
+            ax1.plot(residual, lw=0.7, color=_MUTED)
+            ax1.axhline(0, color=_ACCENT, ls="--", lw=1.0)
+            ax1.set_title("Residual", loc="left", fontsize=11)
+            ax1.set_xlabel("Time", fontsize=9)
+            ax1.set_ylabel("Value", fontsize=9)
+
+            fig.tight_layout()
+        return fig
+
     def plot_profile_grid(plt, np, periods, components, demo_mode, rule_map):
         n = len(periods)
         if n == 0:
@@ -91,67 +79,65 @@ def _():
         cols = min(n, 3)
         rows = (n + cols - 1) // cols
 
-        # Make room for a small variance-decomposition subplot.
-        fig = plt.figure(figsize=(3.2 * cols + 2.0, 3.2 * rows))
-        fig.patch.set_facecolor("white")
-        gs = fig.add_gridspec(rows, cols + 1, width_ratios=[1] * cols + [0.35])
+        with plt.style.context("seaborn-v0_8-whitegrid"):
+            fig = plt.figure(figsize=(3.2 * cols + 2.0, 3.2 * rows))
+            fig.patch.set_facecolor("white")
+            gs = fig.add_gridspec(rows, cols + 1, width_ratios=[1] * cols + [0.35])
 
-        for idx, period in enumerate(periods):
-            comp = components[period]
-            profile = comp.profile
-            rule = rule_map.get(period)
-            title = rule.capitalize() if rule else f"Period {period}"
-            labels = _label_for_period(period, rule)
+            for idx, period in enumerate(periods):
+                comp = components[period]
+                profile = comp.profile
+                rule = rule_map.get(period)
+                title = rule.capitalize() if rule else f"Period {period}"
+                labels = _label_for_period(period, rule)
 
-            # Calendar profiles may have an unused index 0; skip it for display.
-            if demo_mode == "calendar rules":
-                first_used = next((i for i, v in enumerate(profile) if abs(v) > 1e-12), 0)
-            else:
-                first_used = 0
-            display_profile = profile[first_used:]
-            display_labels = labels[first_used:]
-            theta = np.linspace(0, 2 * np.pi, len(display_profile), endpoint=False)
+                # Calendar profiles may have an unused index 0; skip it for display.
+                if demo_mode == "calendar rules":
+                    first_used = next((i for i, v in enumerate(profile) if abs(v) > 1e-12), 0)
+                else:
+                    first_used = 0
+                display_profile = profile[first_used:]
+                display_labels = labels[first_used:]
 
-            ax = fig.add_subplot(gs[idx // cols, idx % cols], projection="polar" if len(display_profile) <= 12 else None)
-            if len(display_profile) <= 12:
-                # Polar plot for short cycles.
-                ax.set_facecolor(_BG)
-                ax.set_theta_zero_location("N")
-                ax.set_theta_direction(-1)
-                radii = display_profile
-                width = 2 * np.pi / len(display_profile)
-                ax.bar(theta, radii, width=width * 0.85, bottom=0.0, color=_ACCENT_LIGHT, edgecolor=_ACCENT, lw=0.5)
-                ax.set_xticks(theta)
-                ax.set_xticklabels(display_labels, fontsize=8)
-                ax.set_yticks([])
-                ax.set_title(f"{title}\n(share {comp.explained_var:.1%})", fontsize=10, pad=10)
-            else:
-                # Horizontal bar plot for long cycles.
-                y_positions = np.arange(len(display_profile))
-                colors = [_ACCENT if v >= 0 else _ACCENT_LIGHT for v in display_profile]
-                ax.barh(y_positions, display_profile, color=colors, edgecolor=_ACCENT, lw=0.5)
-                ax.axvline(0, color=_ACCENT, lw=0.8)
-                ax.set_yticks(y_positions)
-                ax.set_yticklabels(display_labels, fontsize=7)
-                ax.set_xlabel("Effect", fontsize=9)
-                ax.set_title(f"{title}\n(share {comp.explained_var:.1%})", fontsize=10, loc="left")
-                _clean_axes(ax)
-                ax.grid(axis="x", color="#e0e0e0", lw=0.5, ls="-")
+                # Ensure label count matches data count.
+                display_labels = display_labels[: len(display_profile)]
+                theta = np.linspace(0, 2 * np.pi, len(display_profile), endpoint=False)
 
-        # Variance decomposition subplot on the far right.
-        ax_var = fig.add_subplot(gs[:, -1])
-        shares = [components[p].explained_var for p in periods]
-        y = np.arange(n)
-        ax_var.barh(y, shares, color=_ACCENT, edgecolor=_ACCENT, height=0.6)
-        ax_var.set_yticks(y)
-        ax_var.set_yticklabels([rule_map.get(p, f"P{p}").capitalize() if rule_map.get(p) else f"Period {p}" for p in periods], fontsize=8)
-        ax_var.set_xlabel("Explained share", fontsize=8)
-        ax_var.set_title("Variance\ndecomposition", fontsize=9, loc="left")
-        ax_var.set_xlim(0, 1)
-        _clean_axes(ax_var)
-        ax_var.grid(axis="x", color="#e0e0e0", lw=0.5, ls="-")
+                ax = fig.add_subplot(gs[idx // cols, idx % cols], projection="polar" if len(display_profile) <= 12 else None)
+                if len(display_profile) <= 12:
+                    # Polar plot for short cycles.
+                    ax.set_theta_zero_location("N")
+                    ax.set_theta_direction(-1)
+                    radii = display_profile
+                    width = 2 * np.pi / len(display_profile)
+                    ax.bar(theta, radii, width=width * 0.85, bottom=0.0, color=_ACCENT_LIGHT, edgecolor=_ACCENT, lw=0.5)
+                    ax.set_xticks(theta)
+                    ax.set_xticklabels(display_labels, fontsize=8)
+                    ax.set_yticks([])
+                    ax.set_title(f"{title}\n(share {comp.explained_var:.1%})", fontsize=10, pad=10)
+                else:
+                    # Horizontal bar plot for long cycles.
+                    y_positions = np.arange(len(display_profile))
+                    colors = [_ACCENT if v >= 0 else _ACCENT_LIGHT for v in display_profile]
+                    ax.barh(y_positions, display_profile, color=colors, edgecolor=_ACCENT, lw=0.5)
+                    ax.axvline(0, color=_ACCENT, lw=0.8)
+                    ax.set_yticks(y_positions)
+                    ax.set_yticklabels(display_labels, fontsize=7)
+                    ax.set_xlabel("Effect", fontsize=9)
+                    ax.set_title(f"{title}\n(share {comp.explained_var:.1%})", fontsize=10, loc="left")
 
-        fig.tight_layout()
+            # Variance decomposition subplot on the far right.
+            ax_var = fig.add_subplot(gs[:, -1])
+            shares = [components[p].explained_var for p in periods]
+            y = np.arange(n)
+            ax_var.barh(y, shares, color=_ACCENT, edgecolor=_ACCENT, height=0.6)
+            ax_var.set_yticks(y)
+            ax_var.set_yticklabels([rule_map.get(p, f"P{p}").capitalize() if rule_map.get(p) else f"Period {p}" for p in periods], fontsize=8)
+            ax_var.set_xlabel("Explained share", fontsize=8)
+            ax_var.set_title("Variance\ndecomposition", fontsize=9, loc="left")
+            ax_var.set_xlim(0, 1)
+
+            fig.tight_layout()
         return fig
 
     return (
@@ -292,8 +278,8 @@ def _(
 
 
 @app.cell
-def _(generator_periods, index, mo, np, plt, series):
-    """Setup: plot the detrended series and verify mean/slope."""
+def _(generator_periods, index, mo, np, pd, plt, series):
+    """Setup: plot the detrended series, show a data preview, and verify mean/slope."""
     _mean = float(np.mean(series))
     _slope = float(np.linalg.lstsq(
         np.column_stack([np.ones(len(series)), np.arange(len(series))]),
@@ -306,8 +292,16 @@ def _(generator_periods, index, mo, np, plt, series):
     ax_raw.set_title("Synthetic detrended series")
     ax_raw.set_xlabel("Time")
     ax_raw.set_ylabel("Value")
+
     active_periods = ", ".join(str(p) for p in generator_periods)
     index_note = f"Index: {index[0].date()} to {index[-1].date()}" if index is not None else "Index: positional integer index"
+
+    # Build a small data preview as a pandas DataFrame.
+    if index is not None:
+        preview_df = pd.DataFrame({"value": series[:12]}, index=index[:12])
+    else:
+        preview_df = pd.DataFrame({"time": np.arange(12), "value": series[:12]})
+
     mo.vstack([
         mo.md(f"**True periods / rules in the generator:** {active_periods}"),
         mo.md(f"*{index_note}*"),
@@ -315,6 +309,8 @@ def _(generator_periods, index, mo, np, plt, series):
             f"**Detrended check:** mean = `{_mean:.3f}`, residual linear slope = `{_slope:.2e}`. "
             f"These should be essentially zero."
         ),
+        mo.md("**First 12 observations:**"),
+        mo.ui.table(data=preview_df, selection=None),
         mo.mpl.interactive(fig_raw),
     ])
     return
@@ -400,7 +396,7 @@ def _(best, extract_seasonality, mo, np, plt, series, plot_fit_and_residual, plo
     if extracted is None:
         single_section = mo.md("No significant period was detected, so single extraction is skipped.")
     else:
-        _single_fit_fig = plot_fit_and_residual(
+        single_fit_fig = plot_fit_and_residual(
             plt,
             series,
             extracted.fitted,
@@ -409,7 +405,7 @@ def _(best, extract_seasonality, mo, np, plt, series, plot_fit_and_residual, plo
             title=f"Single-period fit (period = {best.period})",
         )
 
-        _single_profile_fig = plot_profile_grid(
+        single_profile_fig = plot_profile_grid(
             plt,
             np,
             [best.period],
@@ -419,8 +415,8 @@ def _(best, extract_seasonality, mo, np, plt, series, plot_fit_and_residual, plo
         )
 
         single_section = mo.vstack([
-            mo.mpl.interactive(_single_fit_fig),
-            mo.mpl.interactive(_single_profile_fig),
+            mo.mpl.interactive(single_fit_fig),
+            mo.mpl.interactive(single_profile_fig),
         ])
 
     single_section
@@ -503,7 +499,7 @@ def _(demo_mode, mo, multi_result, np, plt, series, plot_fit_and_residual, plot_
         if demo_mode.value == "calendar rules" and hasattr(multi, "components_by_rule"):
             rule_map = {comp.period: rule for rule, comp in multi.components_by_rule.items()}
 
-        _multi_fit_fig = plot_fit_and_residual(
+        multi_fit_fig = plot_fit_and_residual(
             plt,
             series,
             multi.fitted,
@@ -512,7 +508,7 @@ def _(demo_mode, mo, multi_result, np, plt, series, plot_fit_and_residual, plot_
             title=f"Joint fit ({multi.periods})",
         )
 
-        _multi_profile_fig = plot_profile_grid(
+        multi_profile_fig = plot_profile_grid(
             plt,
             np,
             multi.periods,
@@ -522,8 +518,8 @@ def _(demo_mode, mo, multi_result, np, plt, series, plot_fit_and_residual, plot_
         )
 
         multi_section = mo.vstack([
-            mo.mpl.interactive(_multi_fit_fig),
-            mo.mpl.interactive(_multi_profile_fig),
+            mo.mpl.interactive(multi_fit_fig),
+            mo.mpl.interactive(multi_profile_fig),
         ])
 
     multi_section
