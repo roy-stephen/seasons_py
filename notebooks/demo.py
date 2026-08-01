@@ -190,7 +190,10 @@ def _(np):
         n = len(periods)
         if n == 0:
             return None
-        cols = min(n, 3)
+
+        cols = min(n, 2)
+        # Each subplot stays readable; total grid width scales up to ~900.
+        subplot_width = min(450, max(280, 900 // cols))
         charts = []
 
         for idx, period in enumerate(periods):
@@ -261,7 +264,7 @@ def _(np):
 
             chart = (baseline + area + line + points).properties(
                 title=f"{title}  |  share {comp.explained_var:.1%}",
-                width=220,
+                width=subplot_width,
                 height=200,
             )
             charts.append(chart)
