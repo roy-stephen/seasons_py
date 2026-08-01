@@ -19,12 +19,14 @@ def _():
         extract_calendar_seasonality,
         select_calendar_seasonality,
         select_seasonalities,
+        result_profile_periodogram,
     )
 
     return (
         alt,
         detect_seasonality,
         extract_calendar_seasonality,
+        select_calendar_seasonality,
         extract_multiple_seasonalities,
         extract_seasonality,
         mo,
@@ -33,6 +35,7 @@ def _():
         scan_periods,
         select_calendar_seasonality,
         select_seasonalities,
+        result_profile_periodogram,
     )
 
 
@@ -655,9 +658,10 @@ def _(
     multi_result,
     np,
     pd,
+    result_profile_periodogram,
     series,
 ):
-    """Act 2 — joint fit, residual, and per-component profiles."""
+    """Act 2 — joint fit, residual, per-component profiles, and profile diagnostics."""
     multi = multi_result
 
     if multi is None or not multi.periods:
@@ -666,6 +670,23 @@ def _(
         rule_map = {}
         if demo_mode.value == "calendar rules" and hasattr(multi, "components_by_rule"):
             rule_map = {comp.period: rule for rule, comp in multi.components_by_rule.items()}
+
+        # Optional diagnostic: scan each learned profile for internal periodic structure.
+        diag = result_profile_periodogram(multi, exclude_selected=True)
+        diag_lines = []
+        for diag_key, diag_subs in diag.items():
+            diag_label = diag_key.capitalize() if isinstance(diag_key, str) else f"Period {diag_key}"
+            if diag_subs:
+                diag_line = ", ".join(f"{s} ({share:.1%})" for s, share in diag_subs[:3])
+                diag_lines.append(f"- **{diag_label}** internal structure: {diag_line}")
+            else:
+                diag_lines.append(f"- **{diag_label}** internal structure: none detected")
+        diag_md = mo.md(
+            "### Profile diagnostics (internal seasonality)\n\n"
+            + "\n".join(diag_lines)
+            + "\n\n*This scans each learned profile for shorter periodic structure. "
+            + "It does not change the model — it is a diagnostic hint.*"
+        )
 
         multi_fit_chart = chart_fit_and_residual(
             alt,
@@ -688,6 +709,7 @@ def _(
         )
 
         multi_section = mo.vstack([
+            diag_md,
             multi_fit_chart,
             multi_profile_chart,
         ])
@@ -723,6 +745,7 @@ def _(
     mo,
     np,
     pd,
+    result_profile_periodogram,
     scan_periods,
     select_calendar_seasonality,
     select_seasonalities,
@@ -767,6 +790,18 @@ def _(
     calendar_rules_test = test_cal_out["selected_rules"]
 
     integer_evidence_chart = chart_evidence(alt, pd, np, results_test, best_test, selected_test, [])
+
+    # Diagnostic: internal structure of calendar and integer profiles.
+    test_diag = result_profile_periodogram(integer_result, exclude_selected=True)
+    test_diag.update(result_profile_periodogram(test_cal_out, exclude_selected=True))
+    test_diag_lines = []
+    for test_key, test_subs in test_diag.items():
+        test_label = test_key.capitalize() if isinstance(test_key, str) else f"Period {test_key}"
+        if test_subs:
+            test_line = ", ".join(f"{s} ({share:.1%})" for s, share in test_subs[:3])
+            test_diag_lines.append(f"- **{test_label}** internal structure: {test_line}")
+        else:
+            test_diag_lines.append(f"- **{test_label}** internal structure: none detected")
 
     integer_fit_chart = chart_fit_and_residual(
         alt,
@@ -826,6 +861,7 @@ def _(
         integer_evidence_chart,
         integer_fit_chart,
         mo.md("### Calendar-seasonality fit and profiles"),
+        mo.md("#### Profile diagnostics (internal seasonality)\n\n" + "\n".join(test_diag_lines)),
         calendar_fit_chart,
         calendar_profile_chart,
     ])

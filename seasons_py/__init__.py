@@ -6,6 +6,7 @@ from seasons_py.calendar import (
     select_calendar_seasonality,
 )
 from seasons_py.detect import detect_seasonality, fold_series, anova_pvalue, scan_periods
+from seasons_py.diagnostics import profile_periodogram, result_profile_periodogram
 from seasons_py.extract import (
     extract_seasonality,
     extract_multiple_seasonalities,
@@ -29,6 +30,8 @@ __all__ = [
     "prune_seasonalities",
     "scan_periods",
     "select_seasonalities",
+    "profile_periodogram",
+    "result_profile_periodogram",
     "SeasonalityResult",
     "MultiSeasonalityResult",
 ]
