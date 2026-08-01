@@ -99,10 +99,11 @@ def _(np):
 
         return alt.vconcat(top_chart, residual_chart).configure_view(stroke=None)
 
-    def chart_evidence(alt, pd, np, results, best, generator_periods):
-        """Interactive ANOVA evidence stem chart."""
+    def chart_evidence(alt, pd, np, results, best, selected_periods, generator_periods):
+        """Interactive ANOVA evidence stem chart with significance highlighting."""
         n_tests = len(results)
         corrected_alpha = 0.05 / n_tests if n_tests > 0 else 0.05
+        threshold_logp = -np.log10(corrected_alpha)
 
         periods = np.array([r.period for r in results])
         pvals = np.array([r.p_value for r in results])
@@ -110,46 +111,79 @@ def _(np):
         cap = 25.0
         capped_logp = np.minimum(logp, cap)
 
+        selected_set = set(int(p) for p in selected_periods)
+        generator_set = set(int(p) for p in generator_periods if str(p).isdigit())
+
         df = pd.DataFrame({
             "period": periods,
             "logp": capped_logp,
             "raw_logp": np.minimum(logp, 999.0),
-            "significant": capped_logp >= -np.log10(corrected_alpha),
+            "kind": np.where(
+                capped_logp >= threshold_logp,
+                np.where(
+                    np.isin(periods, list(selected_set)),
+                    "selected",
+                    "significant",
+                ),
+                "not significant",
+            ),
         })
 
-        points = alt.Chart(df).mark_point(filled=True, size=50).encode(
+        # Faint background points for all candidates.
+        background = alt.Chart(df).mark_point(filled=True, size=20, opacity=0.25).encode(
             x=alt.X("period:Q", title="Candidate period"),
             y=alt.Y("logp:Q", title="-log10(p-value)", scale=alt.Scale(domainMin=0)),
-            tooltip=["period", "raw_logp", "significant"],
         )
-        stems = alt.Chart(df).mark_rule(opacity=0.5).encode(
+
+        # Prominent points colored by kind.
+        points = alt.Chart(df).mark_point(filled=True, size=70).encode(
+            x=alt.X("period:Q", title="Candidate period"),
+            y=alt.Y("logp:Q", title="-log10(p-value)", scale=alt.Scale(domainMin=0)),
+            color=alt.Color(
+                "kind:N",
+                scale=alt.Scale(
+                    domain=["not significant", "significant", "selected"],
+                    range=["#bbbbbb", "#1f77b4", "#d62728"],
+                ),
+                legend=alt.Legend(title="Candidate status"),
+            ),
+            tooltip=["period", "raw_logp", "kind"],
+        )
+
+        # Stems only for significant candidates.
+        sig_df = df[df["kind"] != "not significant"]
+        stems = alt.Chart(sig_df).mark_rule(opacity=0.5).encode(
             x="period:Q",
             y="logp:Q",
             y2=alt.datum(0),
         )
-        threshold = alt.Chart(pd.DataFrame({"y": [-np.log10(corrected_alpha)]})).mark_rule(
+
+        threshold = alt.Chart(pd.DataFrame({"y": [threshold_logp]})).mark_rule(
             strokeDash=[4, 4]
         ).encode(y="y:Q")
 
-        true_periods_df = pd.DataFrame({"x": [int(p) for p in generator_periods if str(p).isdigit()]})
+        # Vertical reference lines for true generator periods.
+        true_periods_df = pd.DataFrame({"x": list(generator_set)})
         true_lines = alt.Chart(true_periods_df).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(
             x="x:Q"
         )
 
+        # Vertical line for the single best period.
         detected_x = best.period if best else None
+        layers = [background, stems, threshold, true_lines]
         if detected_x is not None:
             detected_line = alt.Chart(pd.DataFrame({"x": [detected_x]})).mark_rule(
                 size=2, opacity=0.7
             ).encode(x="x:Q")
-            chart = stems + points + threshold + true_lines + detected_line
-        else:
-            chart = stems + points + threshold + true_lines
+            layers.append(detected_line)
+        layers.append(points)
 
-        return chart.properties(
+        chart = alt.layer(*layers).properties(
             title="ANOVA evidence per candidate period",
             width=900,
             height=220,
         ).configure_view(stroke=None)
+        return chart
 
     def chart_profile_grid(alt, pd, np, periods, components, demo_mode, rule_map):
         """Grid of interactive baseline line charts for each seasonal profile."""
@@ -460,10 +494,13 @@ def _(detect_seasonality, mo, scan_periods, series):
 
 
 @app.cell
-def _(alt, best, chart_evidence, generator_periods, mo, np, pd, results):
+def _(alt, best, chart_evidence, generator_periods, mo, np, pd, results, selected):
     """Act 1 — single-period evidence plot."""
-    evidence_chart = chart_evidence(alt, pd, np, results, best, generator_periods)
-    mo.vstack([mo.md("*Hover for raw -log10(p). Dashed line is the Bonferroni-corrected threshold. Dashed vertical lines mark true generator periods.*"), evidence_chart])
+    evidence_chart = chart_evidence(alt, pd, np, results, best, selected, generator_periods)
+    mo.vstack([mo.md("""
+    *Hover for raw -log10(p-value). Dashed line = Bonferroni-corrected threshold.
+    **Significant** candidates pass the threshold; **selected** candidates are the ones BIC kept.
+    Dashed vertical lines mark true generator periods.*"""), evidence_chart])
     return
 
 
@@ -711,6 +748,8 @@ def _(
     calendar_result = test_cal_out["result"]
     calendar_rules_test = test_cal_out["selected_rules"]
 
+    integer_evidence_chart = chart_evidence(alt, pd, np, results_test, best_test, selected_test, [])
+
     integer_fit_chart = chart_fit_and_residual(
         alt,
         pd,
@@ -720,7 +759,6 @@ def _(
         integer_result.total_explained_var,
         title=f"Integer joint fit — selected {selected_test}",
     )
-    integer_evidence_chart = chart_evidence(alt, pd, np, results_test, best_test, [])
 
     cal_rule_map = {comp.period: rule for rule, comp in test_cal_out["result"].components_by_rule.items()}
     calendar_profile_chart = chart_profile_grid(
