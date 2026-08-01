@@ -192,8 +192,11 @@ def _(np):
             return None
 
         cols = min(n, 2)
-        # Each subplot stays readable; total grid width scales up to ~900.
-        subplot_width = min(450, max(280, 900 // cols))
+        # Altair adds ~40 px of spacing between hconcat charts.
+        spacing = 40
+        subplot_width = min(450, max(280, (900 - spacing * (cols - 1)) // cols))
+        if cols == 1:
+            subplot_width = 900
         charts = []
 
         for idx, period in enumerate(periods):
