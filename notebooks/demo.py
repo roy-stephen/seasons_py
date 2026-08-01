@@ -84,7 +84,7 @@ def _():
         rows = (n + cols - 1) // cols
 
         with plt.style.context("seaborn-v0_8-whitegrid"):
-            fig = plt.figure(figsize=(3.2 * cols + 2.0, 3.2 * rows))
+            fig = plt.figure(figsize=(3.4 * cols + 2.0, 3.0 * rows))
             fig.patch.set_facecolor("white")
             gs = fig.add_gridspec(rows, cols + 1, width_ratios=[1] * cols + [0.35])
 
@@ -107,45 +107,43 @@ def _():
                 display_labels = display_labels[: len(display_profile)]
                 display_profile = display_profile[: len(display_labels)]
                 n_phases = len(display_profile)
-                theta = np.linspace(0, 2 * np.pi, n_phases, endpoint=False)
+                x = np.arange(n_phases)
 
-                ax = fig.add_subplot(gs[idx // cols, idx % cols], projection="polar" if n_phases <= 12 else None)
-                if n_phases <= 12:
-                    # Seasonal clock: line + markers + filled area + zero reference circle.
-                    ax.set_theta_zero_location("N")
-                    ax.set_theta_direction(-1)
-                    # Close the loop for the line plot.
-                    theta_closed = np.append(theta, theta[0])
-                    values_closed = np.append(display_profile, display_profile[0])
+                ax = fig.add_subplot(gs[idx // cols, idx % cols])
 
-                    # Draw zero-reference circle.
-                    ax.plot(theta_closed, np.zeros_like(theta_closed), color=_MUTED, ls="--", lw=1.0, label="zero")
-                    # Fill between profile and zero.
-                    ax.fill_between(theta_closed, 0, values_closed, color=_ACCENT_LIGHT, alpha=0.4)
-                    # Plot the profile line with markers.
-                    ax.plot(theta_closed, values_closed, color=_ACCENT, lw=1.5, marker="o", markersize=5)
+                # Smooth curve through the phase effects.
+                ax.plot(x, display_profile, color=_ACCENT, lw=2.0, marker="o", markersize=6, zorder=3)
 
-                    ax.set_xticks(theta)
-                    ax.set_xticklabels(display_labels, fontsize=8)
-                    # Minimal radial ticks.
-                    vmax = np.max(np.abs(display_profile))
-                    if vmax > 0:
-                        rticks = np.linspace(0, vmax, num=3)
-                        ax.set_yticks(rticks)
-                        ax.set_yticklabels([f"{v:.1f}" for v in rticks], fontsize=7, color="#555555")
-                    else:
-                        ax.set_yticks([])
-                    ax.set_title(f"{title}\n(share {comp.explained_var:.1%})", fontsize=10, pad=10)
-                else:
-                    # Horizontal bar plot for long cycles.
-                    y_positions = np.arange(n_phases)
-                    colors = [_ACCENT if v >= 0 else _ACCENT_LIGHT for v in display_profile]
-                    ax.barh(y_positions, display_profile, color=colors, edgecolor=_ACCENT, lw=0.5)
-                    ax.axvline(0, color=_ACCENT, lw=0.8)
-                    ax.set_yticks(y_positions)
-                    ax.set_yticklabels(display_labels, fontsize=7)
-                    ax.set_xlabel("Effect", fontsize=9)
-                    ax.set_title(f"{title}\n(share {comp.explained_var:.1%})", fontsize=10, loc="left")
+                # Baseline reference line and label.
+                ax.axhline(0, color="#555555", ls="--", lw=1.0, zorder=1)
+                ax.text(0.02, 0.02, "BASELINE (0)", transform=ax.transAxes, fontsize=7, color="#555555", va="bottom")
+
+                # Fill positive and negative areas in two shades.
+                ax.fill_between(x, 0, display_profile, where=(display_profile >= 0), color=_ACCENT, alpha=0.15, interpolate=True, zorder=1)
+                ax.fill_between(x, 0, display_profile, where=(display_profile < 0), color=_ACCENT_LIGHT, alpha=0.25, interpolate=True, zorder=1)
+
+                # Annotate values for short cycles; skip for very long ones to avoid clutter.
+                if n_phases <= 16:
+                    for xi, yi in zip(x, display_profile):
+                        offset = 8 if yi >= 0 else -10
+                        ax.annotate(
+                            f"{yi:+.1f}",
+                            xy=(xi, yi),
+                            textcoords="offset points",
+                            xytext=(0, offset),
+                            ha="center",
+                            fontsize=7,
+                            color=_ACCENT,
+                        )
+
+                ax.set_xticks(x)
+                ax.set_xticklabels(display_labels, fontsize=8)
+                ax.set_ylabel("Effect", fontsize=9)
+                ax.set_title(f"{title}\n(share {comp.explained_var:.1%})", fontsize=10, loc="left")
+                # Keep y-axis symmetric-ish and include zero.
+                y_min, y_max = np.min(display_profile), np.max(display_profile)
+                pad = 0.15 * max(abs(y_min), abs(y_max), 1e-9)
+                ax.set_ylim(min(y_min - pad, -pad), max(y_max + pad, pad))
 
             # Variance decomposition subplot on the far right.
             ax_var = fig.add_subplot(gs[:, -1])
