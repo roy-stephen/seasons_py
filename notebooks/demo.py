@@ -502,7 +502,17 @@ def _(detect_seasonality, mo, scan_periods, series):
 
 
 @app.cell
-def _(alt, best, chart_evidence, generator_periods, mo, np, pd, results, selected):
+def _(
+    alt,
+    best,
+    chart_evidence,
+    generator_periods,
+    mo,
+    np,
+    pd,
+    results,
+    selected,
+):
     """Act 1 — single-period evidence plot."""
     evidence_chart = chart_evidence(alt, pd, np, results, best, selected, generator_periods)
     mo.vstack([mo.md("""
@@ -632,7 +642,7 @@ def _(
         **True generator periods / rules:** {true_periods_str}
         """
     )
-    return (multi_result,)
+    return multi_result, selected
 
 
 @app.cell
@@ -788,8 +798,8 @@ def _(
         title=f"Calendar joint fit — selected rules {calendar_rules_test}",
     )
 
-    cal_shares = "\n".join(
-        f"- `{rule}`: {comp.explained_var:.1%}"
+    cal_shares = "\t".join(
+        f"`{rule}`: {comp.explained_var:.1%}"
         for rule, comp in test_cal_out["result"].components_by_rule.items()
     )
     summary = mo.md(
@@ -819,11 +829,6 @@ def _(
         calendar_fit_chart,
         calendar_profile_chart,
     ])
-    return
-
-
-@app.cell
-def _():
     return
 
 
