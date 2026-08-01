@@ -84,9 +84,9 @@ def _():
         rows = (n + cols - 1) // cols
 
         with plt.style.context("seaborn-v0_8-whitegrid"):
-            fig = plt.figure(figsize=(3.4 * cols + 2.0, 3.0 * rows))
+            fig = plt.figure(figsize=(3.5 * cols, 3.0 * rows))
             fig.patch.set_facecolor("white")
-            gs = fig.add_gridspec(rows, cols + 1, width_ratios=[1] * cols + [0.35])
+            gs = fig.add_gridspec(rows, cols)
 
             for idx, period in enumerate(periods):
                 comp = components[period]
@@ -112,18 +112,20 @@ def _():
                 ax = fig.add_subplot(gs[idx // cols, idx % cols])
 
                 # Smooth curve through the phase effects.
-                ax.plot(x, display_profile, color=_ACCENT, lw=2.0, marker="o", markersize=6, zorder=3)
+                line, = ax.plot(x, display_profile, color=_ACCENT, lw=2.0, marker="o", markersize=5, zorder=3)
 
-                # Baseline reference line and label.
-                ax.axhline(0, color="#555555", ls="--", lw=1.0, zorder=1)
-                ax.text(0.02, 0.02, "BASELINE (0)", transform=ax.transAxes, fontsize=7, color="#555555", va="bottom")
+                # Baseline reference line (as a legend entry).
+                baseline = ax.axhline(0, color="#555555", ls="--", lw=1.0, zorder=1, label="Baseline (0)")
 
-                # Fill positive and negative areas in two shades.
-                ax.fill_between(x, 0, display_profile, where=(display_profile >= 0), color=_ACCENT, alpha=0.15, interpolate=True, zorder=1)
-                ax.fill_between(x, 0, display_profile, where=(display_profile < 0), color=_ACCENT_LIGHT, alpha=0.25, interpolate=True, zorder=1)
+                # Fill positive and negative areas in two distinct colors.
+                pos_fill = ax.fill_between(x, 0, display_profile, where=(display_profile >= 0), color=_ACCENT, alpha=0.15, interpolate=True, zorder=1, label="Positive effect")
+                neg_fill = ax.fill_between(x, 0, display_profile, where=(display_profile < 0), color="#c0392b", alpha=0.15, interpolate=True, zorder=1, label="Negative effect")
 
-                # Annotate values for short cycles; skip for very long ones to avoid clutter.
-                if n_phases <= 16:
+                # Legend: baseline, positive, negative.
+                ax.legend(handles=[baseline, pos_fill, neg_fill], loc="upper right", frameon=True, fancybox=False, edgecolor="white", fontsize=7)
+
+                # Annotate values for very short cycles; skip for longer ones to avoid clutter.
+                if n_phases <= 10:
                     for xi, yi in zip(x, display_profile):
                         offset = 8 if yi >= 0 else -10
                         ax.annotate(
@@ -136,25 +138,24 @@ def _():
                             color=_ACCENT,
                         )
 
-                ax.set_xticks(x)
-                ax.set_xticklabels(display_labels, fontsize=8)
+                # X-axis: use meaningful labels for short cycles, sparse labels for long cycles.
+                if n_phases <= 24:
+                    ax.set_xticks(x)
+                    ax.set_xticklabels(display_labels, fontsize=8)
+                else:
+                    step = max(1, n_phases // 6)
+                    tick_positions = np.arange(0, n_phases, step)
+                    ax.set_xticks(tick_positions)
+                    ax.set_xticklabels([display_labels[i] for i in tick_positions], fontsize=8)
+
+                ax.set_xlabel("Phase", fontsize=9)
                 ax.set_ylabel("Effect", fontsize=9)
-                ax.set_title(f"{title}\n(share {comp.explained_var:.1%})", fontsize=10, loc="left")
-                # Keep y-axis symmetric-ish and include zero.
+                ax.set_title(f"{title}  |  explained share {comp.explained_var:.1%}", fontsize=10, loc="left")
+
+                # Keep y-axis padded and include zero.
                 y_min, y_max = np.min(display_profile), np.max(display_profile)
                 pad = 0.15 * max(abs(y_min), abs(y_max), 1e-9)
                 ax.set_ylim(min(y_min - pad, -pad), max(y_max + pad, pad))
-
-            # Variance decomposition subplot on the far right.
-            ax_var = fig.add_subplot(gs[:, -1])
-            shares = [components[p].explained_var for p in periods]
-            y = np.arange(n)
-            ax_var.barh(y, shares, color=_ACCENT, edgecolor=_ACCENT, height=0.6)
-            ax_var.set_yticks(y)
-            ax_var.set_yticklabels([rule_map.get(p, f"P{p}").capitalize() if rule_map.get(p) else f"Period {p}" for p in periods], fontsize=8)
-            ax_var.set_xlabel("Explained share", fontsize=8)
-            ax_var.set_title("Variance\ndecomposition", fontsize=9, loc="left")
-            ax_var.set_xlim(0, 1)
 
             fig.tight_layout()
         return fig
@@ -406,7 +407,16 @@ def _(best, generator_periods, mo, np, plt, results):
 
 
 @app.cell
-def _(best, extract_seasonality, mo, np, plt, series, plot_fit_and_residual, plot_profile_grid):
+def _(
+    best,
+    extract_seasonality,
+    mo,
+    np,
+    plot_fit_and_residual,
+    plot_profile_grid,
+    plt,
+    series,
+):
     """Act 1 — single-period extraction (fit / residual / profile)."""
     mo.md("### Extract the single detected seasonality")
 
@@ -439,6 +449,12 @@ def _(best, extract_seasonality, mo, np, plt, series, plot_fit_and_residual, plo
         ])
 
     single_section
+    return
+
+
+@app.cell
+def _(generator_periods):
+    generator_periods
     return
 
 
@@ -506,7 +522,16 @@ def _(
 
 
 @app.cell
-def _(demo_mode, mo, multi_result, np, plt, series, plot_fit_and_residual, plot_profile_grid):
+def _(
+    demo_mode,
+    mo,
+    multi_result,
+    np,
+    plot_fit_and_residual,
+    plot_profile_grid,
+    plt,
+    series,
+):
     """Act 2 — joint fit, residual, and per-component profiles."""
     multi = multi_result
 
