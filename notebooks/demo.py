@@ -10,17 +10,19 @@ def _():
     import marimo as mo
     import numpy as np
     import pandas as pd
-    import matplotlib.pyplot as plt
+    import altair as alt
     from seasons_py import (
         detect_seasonality,
         scan_periods,
         extract_seasonality,
         extract_multiple_seasonalities,
         extract_calendar_seasonality,
+        select_calendar_seasonality,
         select_seasonalities,
     )
 
     return (
+        alt,
         detect_seasonality,
         extract_calendar_seasonality,
         extract_multiple_seasonalities,
@@ -28,19 +30,15 @@ def _():
         mo,
         np,
         pd,
-        plt,
         scan_periods,
+        select_calendar_seasonality,
         select_seasonalities,
     )
 
 
 @app.cell
-def _():
-    """Aesthetic helpers for clean, single-color seasonal plots."""
-    _ACCENT = "#2c3e50"
-    _ACCENT_LIGHT = "#5d7a99"
-    _MUTED = "#95a5a6"
-
+def _(np):
+    """Aesthetic helpers for clean, interactive Altair plots using default colors."""
     def _label_for_period(period, rule):
         if rule == "dow":
             return ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -48,122 +46,198 @@ def _():
             return ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
         if rule == "quarter":
             return ["Q1", "Q2", "Q3", "Q4"]
+        if rule == "week_of_year":
+            return [str(i) for i in range(1, period + 1)]
+        if rule in {"week_of_month", "week_of_month_monday"}:
+            return [f"W{i}" for i in range(1, period + 1)]
         if rule == "dom":
             return [str(i) for i in range(1, period + 1)]
         return [str(i) for i in range(1, period + 1)]
 
     def _calendar_first_used(rule):
         """Rules that are naturally 1-indexed have an unused zero slot in our arrays."""
-        return 1 if rule in {"month", "dom", "quarter", "doy"} else 0
+        return 1 if rule in {"month", "dom", "quarter", "doy", "week_of_year", "week_of_month", "week_of_month_monday"} else 0
 
-    def plot_fit_and_residual(plt, series, fitted, residual, total_explained, title=""):
-        with plt.style.context("seaborn-v0_8-whitegrid"):
-            fig, axes = plt.subplots(2, 1, figsize=(10, 5), sharex=True)
-            ax0, ax1 = axes
+    def chart_fit_and_residual(alt, pd, series, fitted, residual, total_explained, title=""):
+        """Interactive original + fitted and residual time-series charts."""
+        n = len(series)
+        df = pd.DataFrame({
+            "time": np.arange(n),
+            "original": series,
+            "fitted": fitted,
+            "residual": residual,
+        })
 
-            ax0.plot(series, lw=0.7, color=_MUTED, alpha=0.7, label="Original")
-            ax0.plot(fitted, lw=1.6, color=_ACCENT, label="Fitted seasonal")
-            ax0.set_title(f"{title}\nTotal explained variance: {total_explained:.1%}", loc="left", fontsize=11)
-            ax0.set_ylabel("Value", fontsize=9)
-            ax0.legend(frameon=True, fancybox=False, edgecolor="white", loc="upper right")
+        base = alt.Chart(df).encode(x=alt.X("time:Q", title="Time"))
 
-            ax1.plot(residual, lw=0.7, color=_MUTED)
-            ax1.axhline(0, color=_ACCENT, ls="--", lw=1.0)
-            ax1.set_title("Residual", loc="left", fontsize=11)
-            ax1.set_xlabel("Time", fontsize=9)
-            ax1.set_ylabel("Value", fontsize=9)
+        # Long-form data so Altair can produce a real color legend.
+        df_melt = df.melt("time", var_name="series", value_name="value")
+        # Filter to only the series we want in the top panel.
+        df_top = df_melt[df_melt["series"].isin(["original", "fitted"])]
+        top_chart = alt.Chart(df_top).mark_line().encode(
+            x=alt.X("time:Q", title="Time"),
+            y=alt.Y("value:Q", title="Value"),
+            color=alt.Color(
+                "series:N",
+                scale=alt.Scale(domain=["original", "fitted"], range=["steelblue", "coral"]),
+                legend=alt.Legend(title=""),
+            ),
+            tooltip=["time", "series", "value"],
+        ).properties(
+            title=f"{title} — explained variance {total_explained:.1%}",
+            width=900,
+            height=180,
+        )
 
-            fig.tight_layout()
-        return fig
+        residual_chart = base.mark_line(size=1).encode(
+            y=alt.Y("residual:Q", title="Residual"),
+            tooltip=["time", "residual"],
+        ) + base.mark_rule(strokeDash=[4, 4]).encode(y=alt.datum(0)).properties(
+            width=900,
+            height=140,
+        )
 
-    def plot_profile_grid(plt, np, periods, components, demo_mode, rule_map):
+        return alt.vconcat(top_chart, residual_chart).configure_view(stroke=None)
+
+    def chart_evidence(alt, pd, np, results, best, generator_periods):
+        """Interactive ANOVA evidence stem chart."""
+        n_tests = len(results)
+        corrected_alpha = 0.05 / n_tests if n_tests > 0 else 0.05
+
+        periods = np.array([r.period for r in results])
+        pvals = np.array([r.p_value for r in results])
+        logp = -np.log10(np.maximum(pvals, 1e-300))
+        cap = 25.0
+        capped_logp = np.minimum(logp, cap)
+
+        df = pd.DataFrame({
+            "period": periods,
+            "logp": capped_logp,
+            "raw_logp": np.minimum(logp, 999.0),
+            "significant": capped_logp >= -np.log10(corrected_alpha),
+        })
+
+        points = alt.Chart(df).mark_point(filled=True, size=50).encode(
+            x=alt.X("period:Q", title="Candidate period"),
+            y=alt.Y("logp:Q", title="-log10(p-value)", scale=alt.Scale(domainMin=0)),
+            tooltip=["period", "raw_logp", "significant"],
+        )
+        stems = alt.Chart(df).mark_rule(opacity=0.5).encode(
+            x="period:Q",
+            y="logp:Q",
+            y2=alt.datum(0),
+        )
+        threshold = alt.Chart(pd.DataFrame({"y": [-np.log10(corrected_alpha)]})).mark_rule(
+            strokeDash=[4, 4]
+        ).encode(y="y:Q")
+
+        true_periods_df = pd.DataFrame({"x": [int(p) for p in generator_periods if str(p).isdigit()]})
+        true_lines = alt.Chart(true_periods_df).mark_rule(strokeDash=[4, 4], opacity=0.7).encode(
+            x="x:Q"
+        )
+
+        detected_x = best.period if best else None
+        if detected_x is not None:
+            detected_line = alt.Chart(pd.DataFrame({"x": [detected_x]})).mark_rule(
+                size=2, opacity=0.7
+            ).encode(x="x:Q")
+            chart = stems + points + threshold + true_lines + detected_line
+        else:
+            chart = stems + points + threshold + true_lines
+
+        return chart.properties(
+            title="ANOVA evidence per candidate period",
+            width=900,
+            height=220,
+        ).configure_view(stroke=None)
+
+    def chart_profile_grid(alt, pd, np, periods, components, demo_mode, rule_map):
+        """Grid of interactive baseline line charts for each seasonal profile."""
         n = len(periods)
         if n == 0:
             return None
         cols = min(n, 3)
-        rows = (n + cols - 1) // cols
+        charts = []
 
-        with plt.style.context("seaborn-v0_8-whitegrid"):
-            fig = plt.figure(figsize=(3.5 * cols, 3.0 * rows))
-            fig.patch.set_facecolor("white")
-            gs = fig.add_gridspec(rows, cols)
+        for idx, period in enumerate(periods):
+            comp = components[period]
+            profile = comp.profile
+            rule = rule_map.get(period)
+            title = rule.capitalize() if rule else f"Period {period}"
+            labels = _label_for_period(period, rule)
 
-            for idx, period in enumerate(periods):
-                comp = components[period]
-                profile = comp.profile
-                rule = rule_map.get(period)
-                title = rule.capitalize() if rule else f"Period {period}"
-                labels = _label_for_period(period, rule)
+            if demo_mode == "calendar rules":
+                first_used = _calendar_first_used(rule)
+            else:
+                first_used = 0
+            display_profile = profile[first_used:]
+            display_labels = labels[first_used:]
+            display_labels = display_labels[: len(display_profile)]
+            display_profile = display_profile[: len(display_labels)]
+            n_phases = len(display_profile)
 
-                # Calendar profiles may have an unused index 0; skip it for display.
-                if demo_mode == "calendar rules":
-                    first_used = _calendar_first_used(rule)
-                else:
-                    first_used = 0
-                display_profile = profile[first_used:]
-                display_labels = labels[first_used:]
+            df = pd.DataFrame({
+                "phase": np.arange(n_phases),
+                "effect": display_profile,
+                "label": display_labels,
+                "sign": np.where(display_profile >= 0, "positive", "negative"),
+            })
 
-                # Ensure label count matches data count (defensive, in case widths differ).
-                display_labels = display_labels[: len(display_profile)]
-                display_profile = display_profile[: len(display_labels)]
-                n_phases = len(display_profile)
-                x = np.arange(n_phases)
+            axis_kwargs = {"labels": n_phases <= 24}
+            if n_phases > 24:
+                axis_kwargs["values"] = list(range(0, n_phases, max(1, n_phases // 6)))
+            x_encode = alt.X(
+                "phase:O",
+                title="Phase",
+                axis=alt.Axis(**axis_kwargs),
+            )
 
-                ax = fig.add_subplot(gs[idx // cols, idx % cols])
+            # Baseline rule at y=0.
+            baseline = alt.Chart(pd.DataFrame({"y": [0.0]})).mark_rule(strokeDash=[4, 4]).encode(y="y:Q")
 
-                # Smooth curve through the phase effects.
-                line, = ax.plot(x, display_profile, color=_ACCENT, lw=2.0, marker="o", markersize=5, zorder=3)
+            # Neutral light fill under the whole line.
+            df_area = pd.DataFrame({
+                "phase": np.arange(n_phases),
+                "effect": display_profile,
+                "label": display_labels,
+            })
+            area = alt.Chart(df_area).mark_area(opacity=0.15, interpolate="linear").encode(
+                x=x_encode,
+                y=alt.Y("effect:Q", title="Effect"),
+            )
 
-                # Baseline reference line (as a legend entry).
-                baseline = ax.axhline(0, color="#555555", ls="--", lw=1.0, zorder=1, label="Baseline (0)")
+            line = alt.Chart(df).mark_line(size=2).encode(
+                x=x_encode,
+                y="effect:Q",
+            )
+            points = alt.Chart(df).mark_circle(size=60).encode(
+                x=x_encode,
+                y="effect:Q",
+                color=alt.Color(
+                    "sign:N",
+                    scale=alt.Scale(domain=["positive", "negative"], range=["#1f77b4", "#d62728"]),
+                    legend=alt.Legend(title="Effect direction") if idx == 0 else None,
+                ),
+                tooltip=[
+                    alt.Tooltip("label:N", title="Phase"),
+                    alt.Tooltip("effect:Q", title="Effect", format=".2f"),
+                    alt.Tooltip("sign:N", title="Direction"),
+                ],
+            )
 
-                # Fill positive and negative areas in two distinct colors.
-                pos_fill = ax.fill_between(x, 0, display_profile, where=(display_profile >= 0), color=_ACCENT, alpha=0.15, interpolate=True, zorder=1, label="Positive effect")
-                neg_fill = ax.fill_between(x, 0, display_profile, where=(display_profile < 0), color="#c0392b", alpha=0.15, interpolate=True, zorder=1, label="Negative effect")
+            chart = (baseline + area + line + points).properties(
+                title=f"{title}  |  share {comp.explained_var:.1%}",
+                width=220,
+                height=200,
+            )
+            charts.append(chart)
 
-                # Legend: baseline, positive, negative.
-                ax.legend(handles=[baseline, pos_fill, neg_fill], loc="upper right", frameon=True, fancybox=False, edgecolor="white", fontsize=7)
+        rows = []
+        for i in range(0, len(charts), cols):
+            rows.append(alt.hconcat(*charts[i:i + cols]))
+        return alt.vconcat(*rows).configure_view(stroke=None)
 
-                # Annotate values for very short cycles; skip for longer ones to avoid clutter.
-                if n_phases <= 10:
-                    for xi, yi in zip(x, display_profile):
-                        offset = 8 if yi >= 0 else -10
-                        ax.annotate(
-                            f"{yi:+.1f}",
-                            xy=(xi, yi),
-                            textcoords="offset points",
-                            xytext=(0, offset),
-                            ha="center",
-                            fontsize=7,
-                            color=_ACCENT,
-                        )
-
-                # X-axis: use meaningful labels for short cycles, sparse labels for long cycles.
-                if n_phases <= 24:
-                    ax.set_xticks(x)
-                    ax.set_xticklabels(display_labels, fontsize=8)
-                else:
-                    step = max(1, n_phases // 6)
-                    tick_positions = np.arange(0, n_phases, step)
-                    ax.set_xticks(tick_positions)
-                    ax.set_xticklabels([display_labels[i] for i in tick_positions], fontsize=8)
-
-                ax.set_xlabel("Phase", fontsize=9)
-                ax.set_ylabel("Effect", fontsize=9)
-                ax.set_title(f"{title}  |  explained share {comp.explained_var:.1%}", fontsize=10, loc="left")
-
-                # Keep y-axis padded and include zero.
-                y_min, y_max = np.min(display_profile), np.max(display_profile)
-                pad = 0.15 * max(abs(y_min), abs(y_max), 1e-9)
-                ax.set_ylim(min(y_min - pad, -pad), max(y_max + pad, pad))
-
-            fig.tight_layout()
-        return fig
-
-    return (
-        plot_fit_and_residual,
-        plot_profile_grid,
-    )
+    return chart_evidence, chart_fit_and_residual, chart_profile_grid
 
 
 @app.cell
@@ -191,11 +265,20 @@ def _(mo):
     second_period = mo.ui.slider(2, 24, value=13, label="Secondary period (set equal to primary to disable)")
     noise_std = mo.ui.slider(0.0, 2.0, step=0.1, value=0.5, label="Noise std")
     n_points = mo.ui.slider(50, 5000, step=50, value=350, label="Series length")
-    max_selected = mo.ui.slider(1, 8, value=5, label="Max periods in joint model")
+    max_selected = mo.ui.slider(1, 8, value=5, label="Max periods / rules in joint model")
     calendar_rules = mo.ui.dropdown(
-        options=["dow,month", "dow,dom", "dow,month,dom", "month,quarter"],
+        options=[
+            "dow,month",
+            "dow,dom",
+            "dow,month,dom",
+            "month,quarter",
+            "dow,week_of_month",
+            "week_of_year",
+            "week_of_month,week_of_month_monday",
+            "auto",
+        ],
         value="dow,month",
-        label="Calendar rules",
+        label="Calendar rules (choose 'auto' to search all)",
     )
     controls = mo.vstack([
         demo_mode,
@@ -220,7 +303,6 @@ def _(mo):
 def _(
     calendar_rules,
     demo_mode,
-    max_selected,
     n_points,
     noise_std,
     np,
@@ -234,7 +316,6 @@ def _(
     _s2 = second_period.value
     _n = n_points.value
     _sigma = noise_std.value
-    _max_selected = max_selected.value
     _rules = [r.strip() for r in calendar_rules.value.split(",")]
 
     np.random.seed(0)
@@ -244,7 +325,6 @@ def _(
         return p - p.mean()
 
     if _mode == "5-seasonality stress test":
-        # High-dimension stress test: five small co-prime periods.
         preset_periods = [3, 5, 7, 11, 13]
         _cycle = int(np.lcm.reduce(preset_periods))
         base = np.zeros(_cycle)
@@ -254,7 +334,6 @@ def _(
         generator_periods = preset_periods
         index = None
     elif _mode == "calendar rules":
-        # Daily calendar seasonality.
         _n_obs = max(_n, 365 * 2)
         index = pd.date_range("2020-01-01", periods=_n_obs, freq="D")
         series = np.zeros(_n_obs)
@@ -277,13 +356,30 @@ def _(
                 quarter_profile = np.array([-2.0, 1.0, 2.0, -1.0])
                 quarter_profile = quarter_profile - quarter_profile.mean()
                 series += quarter_profile[index.quarter - 1]
-        series = series - series.mean()  # ensure zero-mean detrended signal
+            elif rule == "week_of_year":
+                woy_profile = np.zeros(53)
+                woy_profile[0] = 2.0
+                woy_profile[25] = -3.0
+                woy_profile[51] = 2.5
+                woy_profile = woy_profile - woy_profile.mean()
+                series += woy_profile[index.isocalendar().week - 1]
+            elif rule == "week_of_month":
+                wom_profile = np.array([1.5, 0.5, -1.0, -2.0, 0.0])
+                wom_profile = wom_profile - wom_profile.mean()
+                series += wom_profile[(index.day - 1) // 7]
+            elif rule == "week_of_month_monday":
+                first_day = index - pd.offsets.MonthBegin()
+                first_dow = first_day.dayofweek
+                days_since_first_monday = (index.day - 1) - ((7 - first_dow) % 7)
+                week = (days_since_first_monday // 7).astype(int)
+                wom_mon_profile = np.array([1.0, 0.0, -1.5, -2.5, 0.5])
+                wom_mon_profile = wom_mon_profile - wom_mon_profile.mean()
+                series += wom_mon_profile[week]
+        series = series - series.mean()
         series = series[:_n]
         index = index[:_n]
         generator_periods = _rules
     else:
-        # Use the LCM of the two periods as the repeating base so the combined
-        # pattern tiles cleanly for any pair of integer periods.
         _cycle = (_s1 * _s2) if _s1 != _s2 else _s1
         base = np.zeros(_cycle)
         base += np.tile(make_pattern(_s1), _cycle // _s1)
@@ -298,7 +394,7 @@ def _(
 
 
 @app.cell
-def _(generator_periods, index, mo, np, pd, plt, series):
+def _(alt, generator_periods, index, mo, np, pd, series):
     """Setup: plot the detrended series, show a data preview, and verify mean/slope."""
     _mean = float(np.mean(series))
     _slope = float(np.linalg.lstsq(
@@ -307,31 +403,25 @@ def _(generator_periods, index, mo, np, pd, plt, series):
         rcond=None,
     )[0][1])
 
-    fig_raw, ax_raw = plt.subplots(figsize=(10, 3))
-    ax_raw.plot(series, lw=0.8)
-    ax_raw.set_title("Synthetic detrended series")
-    ax_raw.set_xlabel("Time")
-    ax_raw.set_ylabel("Value")
-
     active_periods = ", ".join(str(p) for p in generator_periods)
     index_note = f"Index: {index[0].date()} to {index[-1].date()}" if index is not None else "Index: positional integer index"
 
-    # Build a small data preview as a pandas DataFrame.
     if index is not None:
         preview_df = pd.DataFrame({"value": series[:12]}, index=index[:12])
     else:
         preview_df = pd.DataFrame({"time": np.arange(12), "value": series[:12]})
 
+    df_plot = pd.DataFrame({"time": np.arange(len(series)), "value": series})
+    raw_chart = alt.Chart(df_plot).mark_line(size=1.5).encode(
+        x=alt.X("time:Q", title="Time"),
+        y=alt.Y("value:Q", title="Value"),
+        tooltip=["time", "value"],
+    ).properties(title="Synthetic detrended series", width=900, height=160).configure_view(stroke=None)
+
     mo.vstack([
         mo.md(f"**True periods / rules in the generator:** {active_periods}"),
         mo.md(f"*{index_note}*"),
-        mo.md(
-            f"**Detrended check:** mean = `{_mean:.3f}`, residual linear slope = `{_slope:.2e}`. "
-            f"These should be essentially zero."
-        ),
-        mo.md("**First 12 observations:**"),
-        mo.ui.table(data=preview_df, selection=None),
-        mo.mpl.interactive(fig_raw),
+        raw_chart,
     ])
     return
 
@@ -340,7 +430,7 @@ def _(generator_periods, index, mo, np, pd, plt, series):
 def _(detect_seasonality, mo, scan_periods, series):
     """Act 1 — Single-period detection."""
     s1_detect = mo.md("""
-    ## 1. Single-period detection
+    ## Single-period detection
 
     The simplest use case: scan candidate periods and return the most significant one.
     Each period is tested by folding the series into that many phase buckets and running
@@ -370,51 +460,23 @@ def _(detect_seasonality, mo, scan_periods, series):
 
 
 @app.cell
-def _(best, generator_periods, mo, np, plt, results):
+def _(alt, best, chart_evidence, generator_periods, mo, np, pd, results):
     """Act 1 — single-period evidence plot."""
-    n_tests = len(results)
-    corrected_alpha = 0.05 / n_tests if n_tests > 0 else 0.05
-
-    periods = np.array([r.period for r in results])
-    pvals = np.array([r.p_value for r in results])
-    logp = -np.log10(np.maximum(pvals, 1e-300))
-    cap = 25.0
-    capped_logp = np.minimum(logp, cap)
-    n_capped = np.sum(logp >= cap)
-    sig_line = -np.log10(corrected_alpha)
-
-    fig_evidence, ax_evidence = plt.subplots(figsize=(10, 4))
-    ax_evidence.stem(periods, capped_logp, basefmt=" ", linefmt="C0-", markerfmt="C0o", label="-log10(p)")
-    ax_evidence.axhline(sig_line, color="red", ls="--", lw=1, label=f"α_corr = {corrected_alpha:.2e}")
-
-    for tp in generator_periods:
-        ax_evidence.axvline(tp, color="green", ls="--", lw=1.5, alpha=0.7)
-    if best:
-        ax_evidence.axvline(best.period, color="orange", ls="-", lw=2, alpha=0.7, label="Detected")
-
-    ax_evidence.set_xlabel("Candidate period")
-    ax_evidence.set_ylabel(f"-log10(p-value)  (capped at {int(cap)})")
-    ax_evidence.set_title("ANOVA evidence per candidate period")
-    ax_evidence.legend(loc="upper right")
-    ax_evidence.set_ylim(bottom=-0.5, top=cap + 2)
-
-    note = (
-        f"Bars above the red line pass the corrected significance threshold. "
-        f"Values capped at {int(cap)}: {n_capped} period(s) had extremely small p-values."
-    )
-    mo.vstack([mo.md(f"*{note}*"), mo.mpl.interactive(fig_evidence)])
+    evidence_chart = chart_evidence(alt, pd, np, results, best, generator_periods)
+    mo.vstack([mo.md("*Hover for raw -log10(p). Dashed line is the Bonferroni-corrected threshold. Dashed vertical lines mark true generator periods.*"), evidence_chart])
     return
 
 
 @app.cell
 def _(
+    alt,
     best,
+    chart_fit_and_residual,
+    chart_profile_grid,
     extract_seasonality,
     mo,
     np,
-    plot_fit_and_residual,
-    plot_profile_grid,
-    plt,
+    pd,
     series,
 ):
     """Act 1 — single-period extraction (fit / residual / profile)."""
@@ -425,8 +487,9 @@ def _(
     if extracted is None:
         single_section = mo.md("No significant period was detected, so single extraction is skipped.")
     else:
-        single_fit_fig = plot_fit_and_residual(
-            plt,
+        single_fit_chart = chart_fit_and_residual(
+            alt,
+            pd,
             series,
             extracted.fitted,
             series - extracted.fitted,
@@ -434,8 +497,9 @@ def _(
             title=f"Single-period fit (period = {best.period})",
         )
 
-        single_profile_fig = plot_profile_grid(
-            plt,
+        single_profile_chart = chart_profile_grid(
+            alt,
+            pd,
             np,
             [best.period],
             {best.period: extracted},
@@ -444,17 +508,11 @@ def _(
         )
 
         single_section = mo.vstack([
-            mo.mpl.interactive(single_fit_fig),
-            mo.mpl.interactive(single_profile_fig),
+            single_fit_chart,
+            single_profile_chart,
         ])
 
     single_section
-    return
-
-
-@app.cell
-def _(generator_periods):
-    generator_periods
     return
 
 
@@ -468,20 +526,22 @@ def _(
     max_selected,
     mo,
     results,
+    select_calendar_seasonality,
     select_seasonalities,
     series,
 ):
-    """Act 2 — multiple-period selection (the main feature)."""
+    """Act 2 — multiple-period / calendar selection (the main feature)."""
     mo.md("""
     ## 2. Multiple-period / calendar extraction (joint OLS)
 
-    This is the main idea: instead of detecting periods one at a time and subtracting them,
-    we **select a set of candidate periods and fit all of their seasonal profiles simultaneously**
-    with one linear model. Each profile is estimated conditioning on the others, so the result is
-    order-independent.
+    Instead of detecting periods one at a time and subtracting them, we **select a
+    set of candidates and fit all of their seasonal profiles simultaneously** with
+    one linear model. Each profile is estimated conditioning on the others, so the
+    result is order-independent.
 
-    For integer periods, selection uses a forward step with BIC and a divisor factorization pass.
-    For calendar rules, we fit the chosen rules jointly directly.
+    For integer periods, selection uses a forward step with BIC and a divisor
+    factorization pass. For calendar rules, choose specific rules or use **auto**
+    to let BIC search across all sensible calendar rules.
     """)
 
     if demo_mode.value == "5-seasonality stress test":
@@ -489,13 +549,22 @@ def _(
                "Make sure **Max periods in joint model** is set to 5 or more to see all of them.*")
 
     if demo_mode.value == "calendar rules":
-        # Calendar mode: directly fit the selected rules.
-        cal_out = extract_calendar_seasonality(series, index, generator_periods)
-        selected = cal_out["rules"]
-        multi_result = cal_out["result"]
+        if "auto" in generator_periods:
+            cal_out = select_calendar_seasonality(
+                series,
+                index,
+                rules=None,
+                criterion="bic",
+                max_rules=max_selected.value,
+            )
+            selected = cal_out["selected_rules"]
+            multi_result = cal_out["result"]
+        else:
+            cal_out = extract_calendar_seasonality(series, index, generator_periods)
+            selected = cal_out["rules"]
+            multi_result = cal_out["result"]
         mode_note = "calendar"
     else:
-        # Integer mode: select from ANOVA candidates.
         candidate_periods = [r.period for r in results if r.p_value < 0.05]
         if not candidate_periods:
             candidate_periods = [r.period for r in results[:10]]
@@ -523,13 +592,14 @@ def _(
 
 @app.cell
 def _(
+    alt,
+    chart_fit_and_residual,
+    chart_profile_grid,
     demo_mode,
     mo,
     multi_result,
     np,
-    plot_fit_and_residual,
-    plot_profile_grid,
-    plt,
+    pd,
     series,
 ):
     """Act 2 — joint fit, residual, and per-component profiles."""
@@ -538,13 +608,13 @@ def _(
     if multi is None or not multi.periods:
         multi_section = mo.md("No periods / rules were selected, so the joint model is empty.")
     else:
-        # Map raw period back to rule name for calendar mode labels.
         rule_map = {}
         if demo_mode.value == "calendar rules" and hasattr(multi, "components_by_rule"):
             rule_map = {comp.period: rule for rule, comp in multi.components_by_rule.items()}
 
-        multi_fit_fig = plot_fit_and_residual(
-            plt,
+        multi_fit_chart = chart_fit_and_residual(
+            alt,
+            pd,
             series,
             multi.fitted,
             multi.residual,
@@ -552,8 +622,9 @@ def _(
             title=f"Joint fit ({multi.periods})",
         )
 
-        multi_profile_fig = plot_profile_grid(
-            plt,
+        multi_profile_chart = chart_profile_grid(
+            alt,
+            pd,
             np,
             multi.periods,
             multi.components,
@@ -562,8 +633,8 @@ def _(
         )
 
         multi_section = mo.vstack([
-            mo.mpl.interactive(multi_fit_fig),
-            mo.mpl.interactive(multi_profile_fig),
+            multi_fit_chart,
+            multi_profile_chart,
         ])
 
     multi_section
@@ -579,10 +650,134 @@ def _(mo):
     - **Single detection** is a good first look, but it is greedy and order-sensitive.
     - **Joint extraction** is the recommended workflow when you suspect more than one seasonality.
     - For **integer periods**, let BIC select from `scan_periods` candidates.
-    - For **calendar rules**, pass a `DatetimeIndex` and the rule names directly.
+    - For **calendar rules**, pass a `DatetimeIndex` and the rule names directly, or use `select_calendar_seasonality` to search.
     - The fitted signal is a deterministic tiling of each learned profile, and the residual is
       simply `series - fitted`.
     """)
+    return
+
+
+@app.cell
+def _(
+    alt,
+    chart_evidence,
+    chart_fit_and_residual,
+    chart_profile_grid,
+    detect_seasonality,
+    extract_multiple_seasonalities,
+    mo,
+    np,
+    pd,
+    scan_periods,
+    select_calendar_seasonality,
+    select_seasonalities,
+):
+    """Real-data test: load series_test.txt and apply the whole pipeline."""
+    mo.md("""
+    ## 3. Real-data test: `series_test.txt`
+
+    This section loads an external tab-separated series (`date\tseries`) and runs
+    the same detection + extraction pipeline. The series is business-daily and
+    assumed already detrended. Calendar selection uses `select_calendar_seasonality`
+    so we do not have to pre-specify which rules matter.
+    """)
+
+    df_test = pd.read_csv("series_test.txt", sep="\t", parse_dates=["date"])
+    series_test = df_test["series"].values
+    index_test = pd.DatetimeIndex(df_test["date"])
+
+    _mean = float(np.mean(series_test))
+    _slope = float(np.linalg.lstsq(
+        np.column_stack([np.ones(len(series_test)), np.arange(len(series_test))]),
+        series_test,
+        rcond=None,
+    )[0][1])
+
+    test_df_plot = pd.DataFrame({"time": np.arange(len(series_test)), "value": series_test})
+    test_raw_chart = alt.Chart(test_df_plot).mark_line(size=1).encode(
+        x=alt.X("time:Q", title="Time"),
+        y=alt.Y("value:Q", title="Value"),
+        tooltip=["time", "value"],
+    ).properties(title="series_test.txt raw series", width=900, height=160).configure_view(stroke=None)
+
+    results_test = scan_periods(series_test)
+    best_test = detect_seasonality(series_test)
+
+    test_candidate_periods = [r.period for r in results_test if r.p_value < 0.05]
+    selected_test = select_seasonalities(series_test, test_candidate_periods, criterion="bic", max_periods=5)
+    integer_result = extract_multiple_seasonalities(series_test, selected_test)
+
+    test_cal_out = select_calendar_seasonality(series_test, index_test, rules=None, max_rules=4)
+    calendar_result = test_cal_out["result"]
+    calendar_rules_test = test_cal_out["selected_rules"]
+
+    integer_fit_chart = chart_fit_and_residual(
+        alt,
+        pd,
+        series_test,
+        integer_result.fitted,
+        integer_result.residual,
+        integer_result.total_explained_var,
+        title=f"Integer joint fit — selected {selected_test}",
+    )
+    integer_evidence_chart = chart_evidence(alt, pd, np, results_test, best_test, [])
+
+    cal_rule_map = {comp.period: rule for rule, comp in test_cal_out["result"].components_by_rule.items()}
+    calendar_profile_chart = chart_profile_grid(
+        alt,
+        pd,
+        np,
+        calendar_result.periods,
+        calendar_result.components,
+        demo_mode="calendar rules",
+        rule_map=cal_rule_map,
+    )
+    calendar_fit_chart = chart_fit_and_residual(
+        alt,
+        pd,
+        series_test,
+        calendar_result.fitted,
+        calendar_result.residual,
+        calendar_result.total_explained_var,
+        title=f"Calendar joint fit — selected rules {calendar_rules_test}",
+    )
+
+    cal_shares = "\n".join(
+        f"- `{rule}`: {comp.explained_var:.1%}"
+        for rule, comp in test_cal_out["result"].components_by_rule.items()
+    )
+    summary = mo.md(
+        f"""
+        **Series length:** {len(series_test)} observations
+
+        **Detrended check:** mean = `{_mean:.3f}`, residual linear slope = `{_slope:.2e}`
+
+        **Single detection:** period = `{best_test.period if best_test else None}`
+
+        **BIC integer selection:** `{selected_test}` (explained = {integer_result.total_explained_var:.1%})
+
+        **Auto-selected calendar rules:** `{calendar_rules_test}` (explained = {calendar_result.total_explained_var:.1%})
+
+        **Calendar component shares:**
+        {cal_shares}
+        """
+    )
+
+    mo.vstack([
+        summary,
+        test_raw_chart,
+        mo.md("### Integer-period evidence and fit"),
+        integer_evidence_chart,
+        integer_fit_chart,
+        mo.md("### Calendar-seasonality fit and profiles"),
+        calendar_fit_chart,
+        calendar_profile_chart,
+    ])
+    return
+
+
+@app.cell
+def _():
     return
 
 

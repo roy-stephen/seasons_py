@@ -1,7 +1,11 @@
 """Tests for calendar seasonality support."""
 import numpy as np
 import pandas as pd
-from seasons_py.calendar import calendar_phases, extract_calendar_seasonality
+from seasons_py.calendar import (
+    calendar_phases,
+    extract_calendar_seasonality,
+    select_calendar_seasonality,
+)
 
 
 def test_calendar_phases_daily():
@@ -86,10 +90,62 @@ def test_extract_calendar_gapped_index():
     print("PASS: gapped business-daily index handled")
 
 
+def test_week_of_year_phases():
+    """week_of_year should produce ISO week numbers 1..53."""
+    idx = pd.date_range("2024-01-01", periods=400, freq="D")
+    phases = calendar_phases(idx, ["week_of_year"])
+    assert phases["week_of_year"].min() >= 1
+    assert phases["week_of_year"].max() <= 53
+    print("PASS: week_of_year phases")
+
+
+def test_week_of_month_chunks():
+    """week_of_month splits each month into 7-day chunks."""
+    idx = pd.date_range("2024-01-01", periods=31, freq="D")
+    phases = calendar_phases(idx, ["week_of_month"])
+    expected = np.array([1] * 7 + [2] * 7 + [3] * 7 + [4] * 7 + [5] * 3)
+    np.testing.assert_array_equal(phases["week_of_month"], expected)
+    print("PASS: week_of_month 7-day chunks")
+
+
+def test_week_of_month_monday():
+    """week_of_month_monday starts weeks on Monday. Jan 2024 starts on Monday."""
+    idx = pd.date_range("2024-01-01", periods=31, freq="D")
+    phases = calendar_phases(idx, ["week_of_month_monday"])
+    # Jan 2024 starts Monday, so weeks align with 7-day chunks.
+    expected = np.array([1] * 7 + [2] * 7 + [3] * 7 + [4] * 7 + [5] * 3)
+    np.testing.assert_array_equal(phases["week_of_month_monday"], expected)
+    print("PASS: week_of_month_monday starts on Monday")
+
+
+def test_select_calendar_seasonality_auto():
+    """Auto-selection should pick relevant calendar rules and ignore irrelevant ones."""
+    np.random.seed(77)
+    idx = pd.date_range("2020-01-01", periods=365, freq="D")
+    # Build a series with only month and dow effects.
+    month_profile = np.array([4.0, 3.0, 2.0, 0.0, -1.0, -3.0, -4.0, -3.0, -2.0, 0.0, 1.0, 3.0])
+    month_profile = month_profile - month_profile.mean()
+    dow_profile = np.array([2.0, 1.0, 0.0, 0.0, -1.0, -1.5, -0.5])
+    dow_profile = dow_profile - dow_profile.mean()
+    series = month_profile[idx.month - 1] + dow_profile[idx.dayofweek] + np.random.normal(0, 0.5, len(idx))
+
+    out = select_calendar_seasonality(series, idx, rules=None, criterion="bic", max_rules=5)
+    selected = out["selected_rules"]
+    print(f"Auto-selected calendar rules: {selected}")
+    assert "month" in selected, "month should be selected"
+    assert "dow" in selected, "dow should be selected"
+    assert out["result"].total_explained_var > 0.80
+    print("PASS: auto calendar selection picks relevant rules")
+
+
 if __name__ == "__main__":
     test_calendar_phases_daily()
     test_extract_calendar_dow()
     test_extract_calendar_month_and_dow()
     test_extract_calendar_dom_sparse()
     test_extract_calendar_gapped_index()
+    test_week_of_year_phases()
+    test_week_of_month_chunks()
+    test_week_of_month_monday()
+    test_select_calendar_seasonality_auto()
     print("\nAll calendar tests passed!")
