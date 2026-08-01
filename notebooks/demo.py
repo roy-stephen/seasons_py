@@ -52,6 +52,10 @@ def _():
             return [str(i) for i in range(1, period + 1)]
         return [str(i) for i in range(1, period + 1)]
 
+    def _calendar_first_used(rule):
+        """Rules that are naturally 1-indexed have an unused zero slot in our arrays."""
+        return 1 if rule in {"month", "dom", "quarter", "doy"} else 0
+
     def plot_fit_and_residual(plt, series, fitted, residual, total_explained, title=""):
         with plt.style.context("seaborn-v0_8-whitegrid"):
             fig, axes = plt.subplots(2, 1, figsize=(10, 5), sharex=True)
@@ -93,31 +97,48 @@ def _():
 
                 # Calendar profiles may have an unused index 0; skip it for display.
                 if demo_mode == "calendar rules":
-                    first_used = next((i for i, v in enumerate(profile) if abs(v) > 1e-12), 0)
+                    first_used = _calendar_first_used(rule)
                 else:
                     first_used = 0
                 display_profile = profile[first_used:]
                 display_labels = labels[first_used:]
 
-                # Ensure label count matches data count.
+                # Ensure label count matches data count (defensive, in case widths differ).
                 display_labels = display_labels[: len(display_profile)]
-                theta = np.linspace(0, 2 * np.pi, len(display_profile), endpoint=False)
+                display_profile = display_profile[: len(display_labels)]
+                n_phases = len(display_profile)
+                theta = np.linspace(0, 2 * np.pi, n_phases, endpoint=False)
 
-                ax = fig.add_subplot(gs[idx // cols, idx % cols], projection="polar" if len(display_profile) <= 12 else None)
-                if len(display_profile) <= 12:
-                    # Polar plot for short cycles.
+                ax = fig.add_subplot(gs[idx // cols, idx % cols], projection="polar" if n_phases <= 12 else None)
+                if n_phases <= 12:
+                    # Seasonal clock: line + markers + filled area + zero reference circle.
                     ax.set_theta_zero_location("N")
                     ax.set_theta_direction(-1)
-                    radii = display_profile
-                    width = 2 * np.pi / len(display_profile)
-                    ax.bar(theta, radii, width=width * 0.85, bottom=0.0, color=_ACCENT_LIGHT, edgecolor=_ACCENT, lw=0.5)
+                    # Close the loop for the line plot.
+                    theta_closed = np.append(theta, theta[0])
+                    values_closed = np.append(display_profile, display_profile[0])
+
+                    # Draw zero-reference circle.
+                    ax.plot(theta_closed, np.zeros_like(theta_closed), color=_MUTED, ls="--", lw=1.0, label="zero")
+                    # Fill between profile and zero.
+                    ax.fill_between(theta_closed, 0, values_closed, color=_ACCENT_LIGHT, alpha=0.4)
+                    # Plot the profile line with markers.
+                    ax.plot(theta_closed, values_closed, color=_ACCENT, lw=1.5, marker="o", markersize=5)
+
                     ax.set_xticks(theta)
                     ax.set_xticklabels(display_labels, fontsize=8)
-                    ax.set_yticks([])
+                    # Minimal radial ticks.
+                    vmax = np.max(np.abs(display_profile))
+                    if vmax > 0:
+                        rticks = np.linspace(0, vmax, num=3)
+                        ax.set_yticks(rticks)
+                        ax.set_yticklabels([f"{v:.1f}" for v in rticks], fontsize=7, color="#555555")
+                    else:
+                        ax.set_yticks([])
                     ax.set_title(f"{title}\n(share {comp.explained_var:.1%})", fontsize=10, pad=10)
                 else:
                     # Horizontal bar plot for long cycles.
-                    y_positions = np.arange(len(display_profile))
+                    y_positions = np.arange(n_phases)
                     colors = [_ACCENT if v >= 0 else _ACCENT_LIGHT for v in display_profile]
                     ax.barh(y_positions, display_profile, color=colors, edgecolor=_ACCENT, lw=0.5)
                     ax.axvline(0, color=_ACCENT, lw=0.8)
