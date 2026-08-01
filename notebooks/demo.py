@@ -211,7 +211,9 @@ def _(np):
             else:
                 first_used = 0
             display_profile = profile[first_used:]
-            display_labels = labels[first_used:]
+            # Labels for 1-indexed rules are already aligned with phase 1..N;
+            # only the profile has an unused index-0 slot to drop.
+            display_labels = labels if first_used == 1 else labels[first_used:]
             display_labels = display_labels[: len(display_profile)]
             display_profile = display_profile[: len(display_labels)]
             n_phases = len(display_profile)
